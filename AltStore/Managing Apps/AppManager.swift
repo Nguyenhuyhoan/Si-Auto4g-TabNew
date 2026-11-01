@@ -1,3 +1,4 @@
+
 //
 //  AppManager.swift
 //  AltStore
@@ -552,7 +553,17 @@ final class AppManager: ObservableObject, @unchecked Sendable
                  dbContext: NSManagedObjectContext? = nil,
                  group: RefreshGroup? = nil) -> RefreshGroup
     {
-        debugLog("[AppManager] refresh() called for apps: \(installedApps.map { $0.bundleIdentifier })")
+        // Sắp xếp để ứng dụng chính (SideStore / lc+ss) luôn được làm mới cuối cùng
+        let sortedApps = installedApps.sorted { app1, app2 in
+            let isApp1Self = (app1.bundleIdentifier == StoreApp.altstoreAppID) || (app1.bundleIdentifier == Bundle.main.bundleIdentifier)
+            let isApp2Self = (app2.bundleIdentifier == StoreApp.altstoreAppID) || (app2.bundleIdentifier == Bundle.main.bundleIdentifier)
+            if isApp1Self != isApp2Self {
+                return !isApp1Self
+            }
+            return false
+        }
+
+        debugLog("[AppManager] refresh() called for sorted apps: \(sortedApps.map { $0.bundleIdentifier })")
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
         
         let actualGroup: RefreshGroup
@@ -565,10 +576,10 @@ final class AppManager: ObservableObject, @unchecked Sendable
         
         actualGroup.activeTask = Task.detached {
             do {
-                try await self.pipelineRunner.perform(installedApps.map { .refresh($0) }, handler: pipelineHandler, group: actualGroup)
+                try await self.pipelineRunner.perform(sortedApps.map { .refresh($0) }, handler: pipelineHandler, group: actualGroup)
             } catch {
                 actualGroup.error = error
-                let results = Dictionary(uniqueKeysWithValues: installedApps.map { ($0.bundleIdentifier, Result<InstalledApp, Error>.failure(error)) })
+                let results = Dictionary(uniqueKeysWithValues: sortedApps.map { ($0.bundleIdentifier, Result<InstalledApp, Error>.failure(error)) })
                 actualGroup.completionHandler?(results)
             }
         }
@@ -685,9 +696,18 @@ final class AppManager: ObservableObject, @unchecked Sendable
                            presentsNotifications: Bool = false,
                            completionHandler: @escaping (Result<[String: Result<InstalledApp, Error>], Error>) -> Void) throws -> BackgroundRefreshAppsOperation
     {
+        let sortedApps = installedApps.sorted { app1, app2 in
+            let isApp1Self = (app1.bundleIdentifier == StoreApp.altstoreAppID) || (app1.bundleIdentifier == Bundle.main.bundleIdentifier)
+            let isApp2Self = (app2.bundleIdentifier == StoreApp.altstoreAppID) || (app2.bundleIdentifier == Bundle.main.bundleIdentifier)
+            if isApp1Self != isApp2Self {
+                return !isApp1Self
+            }
+            return false
+        }
+
         let dbBackgroundContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         let context = StandaloneOperationContext(steps: .backgroundRefreshApps, dbBackgroundContext: dbBackgroundContext)
-        let backgroundRefreshAppsOperation = try BackgroundRefreshAppsOperation(installedApps: installedApps, context: context)
+        let backgroundRefreshAppsOperation = try BackgroundRefreshAppsOperation(installedApps: sortedApps, context: context)
         Task.detached {
             do {
                 backgroundRefreshAppsOperation.presentsFinishedNotification = presentsNotifications
@@ -893,5 +913,3 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
     }
 
 }
-
-
