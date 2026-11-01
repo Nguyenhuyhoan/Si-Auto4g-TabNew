@@ -50,7 +50,7 @@ final class InjectBatchProfilesOperation: BaseStandaloneOperation<StandaloneOper
 
         debugLog("[InjectBatchProfilesOperation] Running batch injection for \(sortedBatches.count) app(s)")
 
-        // Tắt 4G đúng 1 lần trước khi tiêm toàn bộ
+        // Tắt 4G đúng 1 lần duy nhất
         await CellularRefreshManager.shared.turnOffDataIfNeeded()
         
         do {
@@ -63,21 +63,6 @@ final class InjectBatchProfilesOperation: BaseStandaloneOperation<StandaloneOper
                 if let installedApp = batch.app, let dbContext = installedApp.managedObjectContext {
                     debugLog("[InjectBatchProfilesOperation] Updating database record for \(batch.bundleID)...")
                     try await dbContext.perform {
-                        // Cập nhật lại ngày làm mới (7 ngày) từ Provisioning Profile vào Database
-                        var parsedProfiles = [String: ALTProvisioningProfile]()
-                        for data in batch.profiles {
-                            if let profile = ALTProvisioningProfile(data: data) {
-                                parsedProfiles[profile.bundleIdentifier] = profile
-                            }
-                        }
-                        if let mainProfile = parsedProfiles[batch.bundleID] ?? parsedProfiles.values.first {
-                            installedApp.update(provisioningProfile: mainProfile)
-                        }
-                        for appExtension in installedApp.appExtensions {
-                            if let extProfile = parsedProfiles[appExtension.bundleIdentifier] {
-                                appExtension.update(provisioningProfile: extProfile)
-                            }
-                        }
                         if let certStatus = batch.certStatus {
                             installedApp.certificateStatus = certStatus
                         }
@@ -91,10 +76,10 @@ final class InjectBatchProfilesOperation: BaseStandaloneOperation<StandaloneOper
                 debugLog("[InjectBatchProfilesOperation] Successfully processed \(batch.bundleID)")
             }
             
-            // Bật lại 4G sau khi đã tiêm xong tất cả
+            // Bật lại 4G ngay sau khi tiêm xong tất cả
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
         } catch {
-            // Đảm bảo luôn bật lại 4G nếu có lỗi xảy ra giữa chừng
+            // Đảm bảo luôn bật lại 4G nếu có lỗi bất ngờ
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
             throw error
         }
