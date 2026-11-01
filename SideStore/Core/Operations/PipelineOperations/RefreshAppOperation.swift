@@ -1,3 +1,4 @@
+
 //
 //  RefreshAppOperation.swift
 //  AltStore
@@ -30,6 +31,10 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         }
         self.setProgress(10)
         
+        let dbContext = self.context.dbBackgroundContext
+        
+        // Nếu đang ở chế độ Gom Nhóm 4G (Refresh All):
+        // Đưa vào hàng đợi chờ tiêm 1 lần ở cuối VÀ cập nhật luôn thông tin 7 ngày vào Database
         if self.context.isCellularRefreshGroup {
             debugLog("[RefreshAppOperation] Queueing \(self.context.bundleIdentifier) into batch profile injection (isCellularRefreshGroup = true)")
             self.context.sharedContext.addPendingProfileBatch(PendingProfileBatch(
@@ -39,12 +44,14 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
                 certStatus: self.context.targetCertStatus
             ))
             self.setProgress(85)
-            guard let app = self.context.installedApp else {
-                throw OperationError.invalidParameters("RefreshAppOperation: context.installedApp is nil")
+            
+            let installedApp = try await dbContext.perform {
+                try self.updateInstalledApp(for: appBundle, profiles: profiles, in: dbContext)
             }
-            return app
+            return installedApp
         }
         
+        // Nếu chỉ Refresh 1 app lẻ:
         do {
             await CellularRefreshManager.shared.turnOffDataIfNeeded()
             for p in profiles {
@@ -57,7 +64,6 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         }
         
         self.setProgress(80)
-        let dbContext = self.context.dbBackgroundContext
         
         let installedApp = try await dbContext.perform {
             try self.updateInstalledApp(for: appBundle, profiles: profiles, in: dbContext)
