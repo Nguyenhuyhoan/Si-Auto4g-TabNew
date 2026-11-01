@@ -38,32 +38,68 @@ final class InjectBatchProfilesOperation: BaseStandaloneOperation<StandaloneOper
             return
         }
 
-        debugLog("[InjectBatchProfilesOperation] Running batch injection for \(self.batches.count) app(s)")
-
-        await CellularRefreshManager.shared.turnOffDataIfNeeded()
-        for batch in self.batches {
-            debugLog("[InjectBatchProfilesOperation] Installing \(batch.profiles.count) profile(s) for \(batch.bundleID)...")
-            for profileData in batch.profiles {
-                try await installProvisioningProfiles(profileData)
+        // Sắp xếp để ứng dụng chính (lc+ss / SideStore) luôn được tiêm profile cuối cùng
+        let sortedBatches = self.batches.sorted { b1, b2 in
+            let isB1Self = (b1.bundleID == StoreApp.altstoreAppID) || b1.bundleID.isAltStoreAppID || (b1.bundleID == Bundle.main.bundleIdentifier)
+            let isB2Self = (b2.bundleID == StoreApp.altstoreAppID) || b2.bundleID.isAltStoreAppID || (b2.bundleID == Bundle.main.bundleIdentifier)
+            if isB1Self != isB2Self {
+                return !isB1Self
             }
+            return false
+        }
 
-            if let installedApp = batch.app, let dbContext = installedApp.managedObjectContext {
-                debugLog("[InjectBatchProfilesOperation] Updating database record for \(batch.bundleID)...")
-                try await dbContext.perform {
-                    if let certStatus = batch.certStatus {
-                        installedApp.certificateStatus = certStatus
-                    }
-                    if dbContext.hasChanges {
-                        try dbContext.save()
+        debugLog("[InjectBatchProfilesOperation] Running batch injection for \(sortedBatches.count) app(s)")
+
+        // Tắt 4G đúng 1 lần trước khi tiêm toàn bộ
+        await CellularRefreshManager.shared.turnOffDataIfNeeded()
+        
+        do {
+            for batch in sortedBatches {
+                debugLog("[InjectBatchProfilesOperation] Installing \(batch.profiles.count) profile(s) for \(batch.bundleID)...")
+                for profileData in batch.profiles {
+                    try await installProvisioningProfiles(profileData)
+                }
+
+                if let installedApp = batch.app, let dbContext = installedApp.managedObjectContext {
+                    debugLog("[InjectBatchProfilesOperation] Updating database record for \(batch.bundleID)...")
+                    try await dbContext.perform {
+                        // Cập nhật lại ngày làm mới (7 ngày) từ Provisioning Profile vào Database
+                        var parsedProfiles = [String: ALTProvisioningProfile]()
+                        for data in batch.profiles {
+                            if let profile = ALTProvisioningProfile(data: data) {
+                                parsedProfiles[profile.bundleIdentifier] = profile
+                            }
+                        }
+                        if let mainProfile = parsedProfiles[batch.bundleID] ?? parsedProfiles.values.first {
+                            installedApp.update(provisioningProfile: mainProfile)
+                        }
+                        for appExtension in installedApp.appExtensions {
+                            if let extProfile = parsedProfiles[appExtension.bundleIdentifier] {
+                                appExtension.update(provisioningProfile: extProfile)
+                            }
+                        }
+                        if let certStatus = batch.certStatus {
+                            installedApp.certificateStatus = certStatus
+                        }
+                        if dbContext.hasChanges {
+                            try dbContext.save()
+                        }
                     }
                 }
-            }
 
-            self.onAppCompleted?(batch.bundleID)
-            debugLog("[InjectBatchProfilesOperation] Successfully processed \(batch.bundleID)")
+                self.onAppCompleted?(batch.bundleID)
+                debugLog("[InjectBatchProfilesOperation] Successfully processed \(batch.bundleID)")
+            }
+            
+            // Bật lại 4G sau khi đã tiêm xong tất cả
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+        } catch {
+            // Đảm bảo luôn bật lại 4G nếu có lỗi xảy ra giữa chừng
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            throw error
         }
-        await CellularRefreshManager.shared.turnOnDataIfNeeded()
-        debugLog("[InjectBatchProfilesOperation] Batch profile injection completed for all \(self.batches.count) app(s)")
+
+        debugLog("[InjectBatchProfilesOperation] Batch profile injection completed for all \(sortedBatches.count) app(s)")
         self.setProgress(100)
     }
 }
