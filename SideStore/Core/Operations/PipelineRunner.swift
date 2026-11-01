@@ -1,3 +1,4 @@
+
 //
 //  PipelineRunner.swift
 //  AltStore
@@ -194,36 +195,54 @@ final class PipelineRunner: Sendable
             throw error
         }
         
-        
-        let operationsCount = operations.count
-        let isCellularRefreshGroup = (operationsCount >= 2 && CellularRefreshManager.shared.isCellularMode)
-        group.isCellularRefreshGroup = isCellularRefreshGroup
-        debugLog("[PipelineRunner] Configured pipeline for \(operationsCount) operation(s): isCellularRefreshGroup = \(isCellularRefreshGroup) (isCellularMode = \(CellularRefreshManager.shared.isCellularMode))")
-
-        // run the operation pipeline
-        try await withThrowingTaskGroup(of: Void.self) { taskGroup in
-            for operation in operations {
-                taskGroup.addTask {
-                    try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount)
-                }
+        // Sắp xếp để lc+ss (SideStore) luôn nằm ở cuối danh sách
+        let sortedOperations = operations.sorted { op1, op2 in
+            let isOp1Self = (op1.app as? ALTApplication)?.isAltStoreApp == true || op1.bundleIdentifier.isAltStoreAppID || op1.bundleIdentifier == Bundle.main.bundleIdentifier
+            let isOp2Self = (op2.app as? ALTApplication)?.isAltStoreApp == true || op2.bundleIdentifier.isAltStoreAppID || op2.bundleIdentifier == Bundle.main.bundleIdentifier
+            if isOp1Self != isOp2Self {
+                return !isOp1Self
             }
-            while let _ = try await taskGroup.next() {}
+            return false
+        }
+        
+        let operationsCount = sortedOperations.count
+        let allAreRefresh = sortedOperations.allSatisfy {
+            if case .refresh = $0 { return true }
+            return false
+        }
+        
+        // BẬT CHẾ ĐỘ GOM NHÓM 4G: Khi làm mới từ 2 app trở lên, gom lại để chỉ Tắt/Bật 4G đúng 1 lần duy nhất ở cuối
+        let isCellularRefreshGroup = (operationsCount >= 2 && CellularRefreshManager.shared.isCellularMode && allAreRefresh)
+        group.isCellularRefreshGroup = isCellularRefreshGroup
+        debugLog("[PipelineRunner] Configured fast pipeline for \(operationsCount) operation(s): isCellularRefreshGroup = \(isCellularRefreshGroup)")
+
+        // Chạy nối tiếp nhau giai đoạn lấy Profile từ Apple (không cần delay vì 4G vẫn đang BẬT xuyên suốt)
+        // Giúp tránh lỗi xung đột Apple Developer Session và CoreData khi gọi cùng lúc trên 4G
+        for operation in sortedOperations {
+            try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount)
         }
 
-        // Run standalone batch profile injection if cellular refresh group with at least 2 operations
-        if isCellularRefreshGroup && operationsCount >= 2 && !group.sharedContext.pendingProfiles.isEmpty {
+        // Sau khi cả 3 app đã lấy xong Profile trên 4G -> Tắt 4G 1 lần duy nhất -> Tiêm cả 3 app -> Bật lại 4G
+        if isCellularRefreshGroup && !group.sharedContext.pendingProfiles.isEmpty {
             debugLog("[PipelineRunner] Starting batch profile injection for \(group.sharedContext.pendingProfiles.count) app(s)...")
             let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: group.dbContext)
+            
+            // Lấy danh sách batch theo đúng thứ tự đã sắp xếp (lc+ss ở cuối cùng)
+            let orderedBatches = sortedOperations.compactMap { group.sharedContext.pendingProfiles[$0.bundleIdentifier] }
+            
             let injectOp = try InjectBatchProfilesOperation(
-                batches: Array(group.sharedContext.pendingProfiles.values),
+                batches: orderedBatches,
                 context: injectContext,
                 onAppCompleted: { [weak self] bundleID in
-                    if let op = operations.first(where: { $0.bundleIdentifier == bundleID }) {
+                    if let op = sortedOperations.first(where: { $0.bundleIdentifier == bundleID }) {
                         self?.progress.progress(for: op)?.completedUnitCount = 100
                     }
                 }
             )
             try await injectOp.execute()
+            
+            // Cập nhật lại Widget sau khi tiêm xong hàng loạt
+            await WidgetDataManager.publishCurrentInstalledApps(in: group.dbContext)
         }
 
         await MainActor.run {
@@ -243,7 +262,7 @@ final class PipelineRunner: Sendable
         }
         do {
             let result = try await self.performPipeline(for: operation, handler: handler, group: group, operationsCount: operationsCount)
-            if operationsCount <= 1 {
+            if operationsCount <= 1 || !group.isCellularRefreshGroup {
                 progress.set(nil, for: operation)
                 debugLog("[AppManager] performOperation: completed successfully. progress was reset for installedApp: \(result.bundleIdentifier)")
             }
@@ -269,9 +288,11 @@ final class PipelineRunner: Sendable
             let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
             operation.logSummary(status: "SUCCESS", elapsed: elapsed)
             
-            debugLog("[AppManager] performOperation: Reloading widget timelines...")
-            await WidgetDataManager.publishCurrentInstalledApps(in: dbContext)
-            debugLog("[AppManager] performOperation: Reloading COMPLETE for widget timelines.")
+            if !group.isCellularRefreshGroup {
+                debugLog("[AppManager] performOperation: Reloading widget timelines...")
+                await WidgetDataManager.publishCurrentInstalledApps(in: dbContext)
+                debugLog("[AppManager] performOperation: Reloading COMPLETE for widget timelines.")
+            }
             
             if result.bundleIdentifier == StoreApp.altstoreAppID {
                 let context = StandaloneOperationContext(steps: .scheduleExpirationWarningNotification, dbBackgroundContext: group.dbContext)
@@ -281,9 +302,15 @@ final class PipelineRunner: Sendable
                 )
                 try await scheduleNotifOp.execute()
             }
-            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            
+            // CHỈ bật lại 4G nếu KHÔNG nằm trong chế độ gom nhóm (tránh bật/tắt giữa chừng)
+            if !group.isCellularRefreshGroup {
+                await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            }
         } catch {
-            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            if !group.isCellularRefreshGroup {
+                await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            }
             progress.set(nil, for: operation)
             
             let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
@@ -385,5 +412,3 @@ extension RefreshGroup {
         return ctx
     }
 }
-
-
