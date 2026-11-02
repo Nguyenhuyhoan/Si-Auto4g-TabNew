@@ -19,19 +19,32 @@ struct Countdown: View
     
     @Environment(\.font) private var font
     
-    private var numberOfDays: Int {
-        guard let date = self.endDate else { return 0 }
+    // Chuỗi hiển thị Ngày - Giờ
+    private var remainingTimeText: String {
+        guard let endDate = self.endDate else { return "0d 0h" }
         
-        let numberOfDays = date.numberOfCalendarDays(since: self.currentDate)
-        return max(numberOfDays, 0) // Never show negative values.
+        // Nếu đã quá hạn
+        if endDate <= self.currentDate {
+            return "0d 0h" // Bạn có thể đổi thành "0n 0g" hoặc "Hết hạn"
+        }
+        
+        let remaining = endDate.remainingDaysAndHours(since: self.currentDate)
+        
+        // Đổi chữ "d" (days) và "h" (hours) thành "n" và "g" nếu muốn tiếng Việt
+        return "\(remaining.days)d \(remaining.hours)h"
     }
     
+    // Tính thanh tiến trình chính xác theo từng giây (thay vì theo ngày như cũ)
     private var fractionComplete: CGFloat {
         guard let startDate = self.startDate, let endDate = self.endDate else { return 1.0 }
         
-        let totalNumberOfDays = endDate.numberOfCalendarDays(since: startDate)
-        let fractionComplete = CGFloat(self.numberOfDays) / CGFloat(totalNumberOfDays)
-        return fractionComplete
+        let totalTime = endDate.timeIntervalSince(startDate)
+        let remainingTime = endDate.timeIntervalSince(self.currentDate)
+        
+        guard totalTime > 0 else { return 0.0 }
+        
+        let fraction = CGFloat(remainingTime / totalTime)
+        return min(max(fraction, 0.0), 1.0) // Giới hạn từ 0.0 đến 1.0
     }
         
     @ViewBuilder
@@ -39,25 +52,20 @@ struct Countdown: View
     {
         let strokeStyle = StrokeStyle(lineWidth: self.strokeWidth, lineCap: .round, lineJoin: .round)
         
-        if self.numberOfDays > 9 || self.numberOfDays < 0 {
-            Capsule(style: .continuous)
-                .trim(from: 0.0, to: progress)
-                .stroke(style: strokeStyle)
-        }
-        else {
-            Circle()
-                .trim(from: 0.0, to: progress)
-                .rotation(Angle(degrees: -90), anchor: .center)
-                .stroke(style: strokeStyle)
-        }
+        // Luôn dùng hình viên thuốc (Capsule) vì chữ "6d 14h" dài hơn 1 con số, để hình tròn sẽ bị tràn viền
+        Capsule(style: .continuous)
+            .trim(from: 0.0, to: progress)
+            .stroke(style: strokeStyle)
     }
     
     var body: some View {
-        Text("\(numberOfDays)")
-            .font((font ?? .title).monospacedDigit())
+        Text(remainingTimeText)
+            .font((font ?? .title3).monospacedDigit()) // Dùng .title3 để chữ vừa vặn hơn
             .bold()
+            .lineLimit(1)
+            .minimumScaleFactor(0.5) // Tự động thu nhỏ chữ nếu không đủ chỗ
             .opacity(endDate != nil ? 1 : 0)
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .overlay(
                 ZStack {
@@ -74,7 +82,7 @@ struct Countdown_Previews: PreviewProvider {
     static var previews: some View {
         let startDate = Calendar.current.date(byAdding: .day, value: -2, to: Date()) ?? Date()
         Group {
-            Countdown(startDate: startDate, endDate: Calendar.current.date(byAdding: .day, value: 7, to: startDate))
+            Countdown(startDate: startDate, endDate: Calendar.current.date(byAdding: .hour, value: 160, to: startDate))
             Countdown(startDate: startDate, endDate: Calendar.current.date(byAdding: .day, value: 365, to: startDate))
         }
         .previewContext(WidgetPreviewContext(family: .systemSmall))
