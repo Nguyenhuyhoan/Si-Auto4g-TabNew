@@ -211,38 +211,46 @@ final class PipelineRunner: Sendable
             return false
         }
         
-        // BẬT CHẾ ĐỘ GOM NHÓM 4G: Khi làm mới từ 2 app trở lên, gom lại để chỉ Tắt/Bật 4G đúng 1 lần duy nhất ở cuối
-        let isCellularRefreshGroup = (operationsCount >= 2 && CellularRefreshManager.shared.isCellularMode && allAreRefresh)
+        // BẬT CHẾ ĐỘ GOM NHÓM 4G: Khi làm mới từ 2 app trở lên, HOẶC khi đang chạy bằng Shortcut 2 giai đoạn
+        let isCellularRefreshGroup = ((operationsCount >= 2 || CellularRefreshManager.shared.isShortcutTwoStageMode) && CellularRefreshManager.shared.isCellularMode && allAreRefresh)
         group.isCellularRefreshGroup = isCellularRefreshGroup
         debugLog("[PipelineRunner] Configured fast pipeline for \(operationsCount) operation(s): isCellularRefreshGroup = \(isCellularRefreshGroup)")
 
         // Chạy nối tiếp nhau giai đoạn lấy Profile từ Apple (không cần delay vì 4G vẫn đang BẬT xuyên suốt)
-        // Giúp tránh lỗi xung đột Apple Developer Session và CoreData khi gọi cùng lúc trên 4G
         for operation in sortedOperations {
             try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount)
         }
 
-        // Sau khi cả 3 app đã lấy xong Profile trên 4G -> Tắt 4G 1 lần duy nhất -> Tiêm cả 3 app -> Bật lại 4G
+        // Sau khi cả 3 app đã lấy xong Profile trên 4G:
         if isCellularRefreshGroup && !group.sharedContext.pendingProfiles.isEmpty {
-            debugLog("[PipelineRunner] Starting batch profile injection for \(group.sharedContext.pendingProfiles.count) app(s)...")
-            let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: group.dbContext)
-            
-            // Lấy danh sách batch theo đúng thứ tự đã sắp xếp (lc+ss ở cuối cùng)
             let orderedBatches = sortedOperations.compactMap { group.sharedContext.pendingProfiles[$0.bundleIdentifier] }
             
-            let injectOp = try InjectBatchProfilesOperation(
-                batches: orderedBatches,
-                context: injectContext,
-                onAppCompleted: { [weak self] bundleID in
-                    if let op = sortedOperations.first(where: { $0.bundleIdentifier == bundleID }) {
-                        self?.progress.progress(for: op)?.completedUnitCount = 100
-                    }
+            if CellularRefreshManager.shared.isShortcutTwoStageMode {
+                // Đang chạy "Cellular Refresh 1" trong Phím tắt -> Cất Profile vào bộ nhớ tạm rồi dừng lại để chờ Phím tắt tắt 4G!
+                debugLog("[PipelineRunner] Shortcut Stage 1: Staged \(orderedBatches.count) app(s) for Stage 2 injection.")
+                CellularRefreshManager.shared.stagedBatches = orderedBatches
+                for op in sortedOperations {
+                    self.progress.progress(for: op)?.completedUnitCount = 100
                 }
-            )
-            try await injectOp.execute()
-            
-            // Cập nhật lại Widget sau khi tiêm xong hàng loạt
-            await WidgetDataManager.publishCurrentInstalledApps(in: group.dbContext)
+            } else {
+                // Đang bấm nút trong App bình thường -> Tắt 4G 1 lần duy nhất -> Tiêm cả 3 app -> Bật lại 4G
+                debugLog("[PipelineRunner] Starting batch profile injection for \(group.sharedContext.pendingProfiles.count) app(s)...")
+                let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: group.dbContext)
+                
+                let injectOp = try InjectBatchProfilesOperation(
+                    batches: orderedBatches,
+                    context: injectContext,
+                    onAppCompleted: { [weak self] bundleID in
+                        if let op = sortedOperations.first(where: { $0.bundleIdentifier == bundleID }) {
+                            self?.progress.progress(for: op)?.completedUnitCount = 100
+                        }
+                    }
+                )
+                try await injectOp.execute()
+                
+                // Cập nhật lại Widget sau khi tiêm xong hàng loạt
+                await WidgetDataManager.publishCurrentInstalledApps(in: group.dbContext)
+            }
         }
 
         await MainActor.run {
