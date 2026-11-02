@@ -22,6 +22,20 @@ public struct ShortcutsProvider: AppShortcutsProvider
                     shortTitle: "Refresh All Apps",
                     systemImageName: "arrow.triangle.2.circlepath")
 
+        AppShortcut(intent: CellularRefresh1Intent(),
+                    phrases: [
+                        "Cellular Refresh 1 with \(.applicationName)"
+                    ],
+                    shortTitle: "Cellular Refresh 1",
+                    systemImageName: "antenna.radiowaves.left.and.right")
+
+        AppShortcut(intent: CellularRefresh2Intent(),
+                    phrases: [
+                        "Cellular Refresh 2 with \(.applicationName)"
+                    ],
+                    shortTitle: "Cellular Refresh 2",
+                    systemImageName: "checkmark.shield")
+
         AppShortcut(intent: InstallIPAIntent(),
                     phrases: [
                         "Install IPA with \(.applicationName)",
