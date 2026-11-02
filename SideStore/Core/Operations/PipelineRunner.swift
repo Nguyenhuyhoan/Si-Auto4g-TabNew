@@ -25,7 +25,6 @@ protocol PipelineErrorLogger: AnyObject, Sendable {
 }
 
 
-// Pipeline based App Operations
 final class PipelineRunner: Sendable
 {
     let progress: PipelineProgress
@@ -115,7 +114,6 @@ final class PipelineRunner: Sendable
             return taskID
         }
         
-        // Disable the idleTimeout
         await MainActor.run {
             if !UIApplication.shared.isIdleTimerDisabled {
                 UIApplication.shared.isIdleTimerDisabled = UserDefaults.standard.isIdleTimeoutDisableEnabled
@@ -123,17 +121,15 @@ final class PipelineRunner: Sendable
         }
         
         defer {
-            for operation in operations {                   // Clean up progress for all operations
+            for operation in operations {
                 progress.set(nil, for: operation)
             }
-            if let error = group.error {            // Mark error as-is
+            if let error = group.error {
                 for operation in operations {
                     group.set(.failure(error), forAppWithBundleIdentifier: operation.bundleIdentifier)
                 }
             }
             
-            
-            // Re-enable idleTimeout if no more actions are running and end background task
             Task { @MainActor in
                 if UIApplication.shared.isIdleTimerDisabled && !context.isActivelyManagingAnyApp {
                     UIApplication.shared.isIdleTimerDisabled = false
@@ -144,16 +140,17 @@ final class PipelineRunner: Sendable
             }
         }
         
-        /* Minimuxer Readiness Check */
-        do {
-            try await ensureMinimuxerReady()
-        } catch let opError as OperationError {
-            group.error = opError
-            for operation in operations {
-                let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
-                operation.logSummary(status: "FAILED", elapsed: elapsed, error: opError)
+        if !CellularRefreshManager.shared.isShortcutTwoStageMode {
+            do {
+                try await ensureMinimuxerReady()
+            } catch let opError as OperationError {
+                group.error = opError
+                for operation in operations {
+                    let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
+                    operation.logSummary(status: "FAILED", elapsed: elapsed, error: opError)
+                }
+                throw opError
             }
-            throw opError
         }
         
         group.progress.totalUnitCount = Int64(operations.count * 100)
@@ -166,36 +163,35 @@ final class PipelineRunner: Sendable
             group.progress.addChild(progress, withPendingUnitCount: 100)
         }
         
-        
-        /* Preflight SideStore specific validations */
-        let unhandledOperations = operations.filter { operation in
-            let isSideStore = (operation.app as? ALTApplication)?.isAltStoreApp == true ||
-                               operation.bundleIdentifier.isAltStoreAppID
+        if !CellularRefreshManager.shared.isShortcutTwoStageMode {
+            let unhandledOperations = operations.filter { operation in
+                let isSideStore = (operation.app as? ALTApplication)?.isAltStoreApp == true ||
+                                   operation.bundleIdentifier.isAltStoreAppID
+                
+                if isSideStore {
+                    return handler.preflightChecksHandler.isResignActive == true
+                }
+                return true
+            }
             
-            if isSideStore {
-                return handler.preflightChecksHandler.isResignActive == true
+            do {
+                let preflightContext = StandaloneOperationContext(steps: .preflightChecks, dbBackgroundContext: group.dbContext)
+                let validateOp = try PreflightChecksOperation(
+                    operations: unhandledOperations,
+                    handler: handler.preflightChecksHandler,
+                    context: preflightContext
+                )
+                try await validateOp.execute()
+            } catch {
+                group.error = error
+                for operation in operations {
+                    let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
+                    operation.logSummary(status: "FAILED", elapsed: elapsed, error: error)
+                }
+                throw error
             }
-            return true
         }
         
-        do {
-            let preflightContext = StandaloneOperationContext(steps: .preflightChecks, dbBackgroundContext: group.dbContext)
-            let validateOp = try PreflightChecksOperation(
-                operations: unhandledOperations,
-                handler: handler.preflightChecksHandler,
-                context: preflightContext
-            )
-            try await validateOp.execute()
-        } catch {
-            group.error = error
-            for operation in operations {
-                let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
-                operation.logSummary(status: "FAILED", elapsed: elapsed, error: error)
-            }
-            throw error
-        }
-        
-        // Sắp xếp để lc+ss (SideStore) luôn nằm ở cuối danh sách
         let sortedOperations = operations.sorted { op1, op2 in
             let isOp1Self = (op1.app as? ALTApplication)?.isAltStoreApp == true || op1.bundleIdentifier.isAltStoreAppID || op1.bundleIdentifier == Bundle.main.bundleIdentifier
             let isOp2Self = (op2.app as? ALTApplication)?.isAltStoreApp == true || op2.bundleIdentifier.isAltStoreAppID || op2.bundleIdentifier == Bundle.main.bundleIdentifier
@@ -211,29 +207,24 @@ final class PipelineRunner: Sendable
             return false
         }
         
-        // BẬT CHẾ ĐỘ GOM NHÓM 4G: Khi làm mới từ 2 app trở lên, HOẶC khi đang chạy bằng Shortcut 2 giai đoạn
         let isCellularRefreshGroup = ((operationsCount >= 2 || CellularRefreshManager.shared.isShortcutTwoStageMode) && CellularRefreshManager.shared.isCellularMode && allAreRefresh)
         group.isCellularRefreshGroup = isCellularRefreshGroup
         debugLog("[PipelineRunner] Configured fast pipeline for \(operationsCount) operation(s): isCellularRefreshGroup = \(isCellularRefreshGroup)")
 
-        // Chạy nối tiếp nhau giai đoạn lấy Profile từ Apple (không cần delay vì 4G vẫn đang BẬT xuyên suốt)
         for operation in sortedOperations {
             try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount)
         }
 
-        // Sau khi cả 3 app đã lấy xong Profile trên 4G:
         if isCellularRefreshGroup && !group.sharedContext.pendingProfiles.isEmpty {
             let orderedBatches = sortedOperations.compactMap { group.sharedContext.pendingProfiles[$0.bundleIdentifier] }
             
             if CellularRefreshManager.shared.isShortcutTwoStageMode {
-                // Đang chạy "Cellular Refresh 1" trong Phím tắt -> Cất Profile vào bộ nhớ tạm rồi dừng lại để chờ Phím tắt tắt 4G!
                 debugLog("[PipelineRunner] Shortcut Stage 1: Staged \(orderedBatches.count) app(s) for Stage 2 injection.")
                 CellularRefreshManager.shared.stagedBatches = orderedBatches
                 for op in sortedOperations {
                     self.progress.progress(for: op)?.completedUnitCount = 100
                 }
             } else {
-                // Đang bấm nút trong App bình thường -> Tắt 4G 1 lần duy nhất -> Tiêm cả 3 app -> Bật lại 4G
                 debugLog("[PipelineRunner] Starting batch profile injection for \(group.sharedContext.pendingProfiles.count) app(s)...")
                 let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: group.dbContext)
                 
@@ -248,7 +239,6 @@ final class PipelineRunner: Sendable
                 )
                 try await injectOp.execute()
                 
-                // Cập nhật lại Widget sau khi tiêm xong hàng loạt
                 await WidgetDataManager.publishCurrentInstalledApps(in: group.dbContext)
             }
         }
@@ -263,7 +253,6 @@ final class PipelineRunner: Sendable
     func performOperation(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1) async throws {
         debugLog("[AppManager] performOperation: Starting execution for app: \(operation.bundleIdentifier)")
         defer {
-            // request update view context's in-mem coredata caches (coz we worked so far on bg context)
             Task { @MainActor in
                 DatabaseManager.shared.viewContext.processPendingChanges()
             }
@@ -275,7 +264,6 @@ final class PipelineRunner: Sendable
                 debugLog("[AppManager] performOperation: completed successfully. progress was reset for installedApp: \(result.bundleIdentifier)")
             }
             
-            // persist the result
             let bundleID = result.bundleIdentifier
             let dbContext = group.dbContext
             do {
@@ -311,7 +299,6 @@ final class PipelineRunner: Sendable
                 try await scheduleNotifOp.execute()
             }
             
-            // CHỈ bật lại 4G nếu KHÔNG nằm trong chế độ gom nhóm (tránh bật/tắt giữa chừng)
             if !group.isCellularRefreshGroup {
                 await CellularRefreshManager.shared.turnOnDataIfNeeded()
             }
@@ -332,7 +319,6 @@ final class PipelineRunner: Sendable
             operation.logSummary(status: status, elapsed: elapsed, error: error)
             
             if isCancelled {
-                // Cancellation error is logged and ignored
                 group.set(.failure(OperationError.cancelled), forAppWithBundleIdentifier: operation.bundleIdentifier)
                 return
             }
