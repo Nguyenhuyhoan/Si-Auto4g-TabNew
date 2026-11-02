@@ -1,3 +1,4 @@
+
 //
 //  RefreshAllAppsIntent.swift
 //  AltStore
@@ -88,7 +89,7 @@ struct InstallIPAIntent: AppIntent, ProgressReportingIntent
 @available(iOS 17.0, tvOS 17.0, *)
 extension RefreshAllAppsIntent
 {
-    private actor OperationActor
+    actor OperationActor
     {
         private(set) var operation: BackgroundRefreshAppsOperation?
         
@@ -230,6 +231,109 @@ private extension RefreshAllAppsIntent
             Task {
                 await self.operationActor.set(operation)
             }
+        }
+    }
+}
+
+// MARK: - Cellular Refresh 1 & 2 (Chạy ngầm 100% qua Shortcuts)
+
+@available(iOS 17.0, tvOS 17.0, *)
+struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundContinuableIntent
+{
+    static var title: LocalizedStringResource = "Cellular Refresh 1"
+    static var description = IntentDescription("Giai đoạn 1: Tải Provisioning Profile qua 4G và lưu tạm.")
+    static var openAppWhenRun: Bool = false
+
+    private let operationActor = RefreshAllAppsIntent.OperationActor()
+
+    init() {
+        self.progress.completedUnitCount = 0
+        self.progress.totalUnitCount = 1
+    }
+
+    func perform() async throws -> some IntentResult & ProvidesDialog
+    {
+        CellularRefreshManager.shared.isShortcutTwoStageMode = true
+        CellularRefreshManager.shared.stagedBatches = []
+
+        do {
+            try await DatabaseManager.shared.start()
+            let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+            let installedApps = await context.perform { InstalledApp.fetchAppsForRefreshingAll(in: context) }
+
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: false) { result in
+                    do {
+                        let results = try result.get()
+                        for (_, res) in results {
+                            guard case let .failure(error) = res else { continue }
+                            throw error
+                        }
+                        continuation.resume()
+                    } catch OperationError.noInstalledApps {
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+
+                guard let operation else {
+                    continuation.resume(throwing: OperationError.unknownResult)
+                    return
+                }
+
+                operation.ignoresServerNotFoundError = false
+                self.progress.addChild(operation.progress, withPendingUnitCount: 1)
+            }
+
+            return .result(dialog: "Cellular Refresh 1 hoàn tất.")
+        } catch {
+            CellularRefreshManager.shared.isShortcutTwoStageMode = false
+            throw IntentError(error)
+        }
+    }
+}
+
+@available(iOS 17.0, tvOS 17.0, *)
+struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent
+{
+    static var title: LocalizedStringResource = "Cellular Refresh 2"
+    static var description = IntentDescription("Giai đoạn 2: Tiêm Profile vào máy khi đã tắt 4G.")
+    static var openAppWhenRun: Bool = false
+
+    init() {
+        self.progress.completedUnitCount = 0
+        self.progress.totalUnitCount = 1
+    }
+
+    func perform() async throws -> some IntentResult & ProvidesDialog
+    {
+        defer {
+            CellularRefreshManager.shared.isShortcutTwoStageMode = false
+            CellularRefreshManager.shared.stagedBatches = []
+        }
+
+        do {
+            try await DatabaseManager.shared.start()
+            let batches = CellularRefreshManager.shared.stagedBatches
+            guard !batches.isEmpty else {
+                return .result(dialog: "Không có ứng dụng nào chờ làm mới.")
+            }
+
+            // Đợi kết nối Minimuxer sẵn sàng sau khi tắt 4G
+            _ = await CellularRefreshManager.shared.waitForMinimuxerReady(timeout: 3.0)
+
+            let dbContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+            let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: dbContext)
+            let injectOp = try InjectBatchProfilesOperation(batches: batches, context: injectContext)
+            try await injectOp.execute()
+
+            await WidgetDataManager.publishCurrentInstalledApps(in: dbContext)
+            self.progress.completedUnitCount = 1
+
+            return .result(dialog: "Đã làm mới tất cả ứng dụng bằng 4G!")
+        } catch {
+            throw IntentError(error)
         }
     }
 }
