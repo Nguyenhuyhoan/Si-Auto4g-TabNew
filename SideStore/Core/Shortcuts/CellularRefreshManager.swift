@@ -1,3 +1,4 @@
+
 //
 //  CellularRefreshManager.swift
 //  SideStore
@@ -20,6 +21,20 @@ public final class CellularRefreshManager: @unchecked Sendable {
         set { lock.withLock { cachedDidTurnOffData = newValue } }
     }
 
+    // --- BỘ NHỚ TẠM CHO SHORTCUT 2 GIAI ĐOẠN ---
+    private var cachedShortcutMode = false
+    public var isShortcutTwoStageMode: Bool {
+        get { lock.withLock { cachedShortcutMode } }
+        set { lock.withLock { cachedShortcutMode = newValue } }
+    }
+
+    private var cachedStagedBatches: [PendingProfileBatch] = []
+    internal var stagedBatches: [PendingProfileBatch] {
+        get { lock.withLock { cachedStagedBatches } }
+        set { lock.withLock { cachedStagedBatches = newValue } }
+    }
+    // ------------------------------------------
+
     private init() {}
 
     public var isSupported: Bool {
@@ -35,6 +50,7 @@ public final class CellularRefreshManager: @unchecked Sendable {
     }
 
     public var isCellularMode: Bool {
+        if isShortcutTwoStageMode { return true }
         guard isSupported && isEnabled else { return false }
         return !minimuxer.network.isWifiSatisfied
     }
@@ -156,7 +172,7 @@ public final class CellularRefreshManager: @unchecked Sendable {
         try? await Task.sleep(nanoseconds: UInt64(totalDelay * 1_000_000_000))
     }
 
-    private func waitForMinimuxerReady(timeout: TimeInterval) async -> Bool {
+    public func waitForMinimuxerReady(timeout: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         debugLog("[CellularRefreshManager] Waiting for minimuxer endpoint to become ready (timeout: \(timeout)s)...")
         while Date() < deadline {
@@ -174,6 +190,8 @@ public final class CellularRefreshManager: @unchecked Sendable {
     // public apis
     @discardableResult
     public func turnOffDataIfNeeded(addOnDelay: TimeInterval = 0) async -> Bool {
+        // Nếu đang chạy bằng Phím tắt 2 giai đoạn thì bỏ qua lệnh mở URL
+        guard !isShortcutTwoStageMode else { return false }
         guard isSupported && isEnabled else { return false }
         guard !didTurnOffData else { return false }
 
@@ -195,6 +213,7 @@ public final class CellularRefreshManager: @unchecked Sendable {
 
     @discardableResult
     public func turnOnDataIfNeeded(addOnDelay: TimeInterval = 0) async -> Bool {
+        guard !isShortcutTwoStageMode else { return false }
         guard didTurnOffData else { return false }
 
         let success = await turnOnData()
