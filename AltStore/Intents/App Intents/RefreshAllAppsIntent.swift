@@ -9,11 +9,6 @@
 
 import AppIntents
 
-// Shouldn't conform types we don't own to protocols we don't own, so make custom
-// NSError subclass that conforms to CustomLocalizedStringResourceConvertible instead.
-//
-// Would prefer to just conform ALTLocalizedError to CustomLocalizedStringResourceConvertible,
-// but that can't be done without raising minimum version for ALTLocalizedError to iOS 16 :/
 @available(iOS 16, tvOS 16, *)
 class IntentError: NSError, CustomLocalizedStringResourceConvertible, @unchecked Sendable
 {
@@ -142,7 +137,6 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     {
         do
         {
-            // Request foreground execution at ~27 seconds to gracefully handle timeout.
             let deadline: ContinuousClock.Instant = .now + .seconds(27)
             
             try await withThrowingTaskGroup(of: Void.self) { taskGroup in
@@ -159,15 +153,12 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
                 {
                     for try await _ in taskGroup.prefix(1)
                     {
-                        // We only care about the first child task to complete.
                         taskGroup.cancelAll()
                         break
                     }
                 }
                 catch OperationError.timedOut
                 {
-                    // We took too long to finish and return the final result,
-                    // so we'll now present a normal notification when finished.
                     let operation = await self.operationActor.operation
                     operation?.presentsFinishedNotification = true
                     
@@ -235,8 +226,6 @@ private extension RefreshAllAppsIntent
     }
 }
 
-// MARK: - Cellular Refresh 1 & 2 (Chạy ngầm 100% qua Shortcuts)
-
 @available(iOS 17.0, tvOS 17.0, *)
 struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundContinuableIntent
 {
@@ -257,39 +246,69 @@ struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundCon
         CellularRefreshManager.shared.stagedBatches = []
 
         do {
-            try await DatabaseManager.shared.start()
-            let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-            let installedApps = await context.perform { InstalledApp.fetchAppsForRefreshingAll(in: context) }
-
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: false) { result in
-                    do {
-                        let results = try result.get()
-                        for (_, res) in results {
-                            guard case let .failure(error) = res else { continue }
-                            throw error
-                        }
-                        continuation.resume()
-                    } catch OperationError.noInstalledApps {
-                        continuation.resume()
-                    } catch {
-                        continuation.resume(throwing: error)
+            let deadline: ContinuousClock.Instant = .now + .seconds(27)
+            
+            try await withThrowingTaskGroup(of: Void.self) { taskGroup in
+                taskGroup.addTask {
+                    try await self.runStage1()
+                }
+                
+                taskGroup.addTask {
+                    try await Task.sleep(until: deadline)
+                    throw OperationError.timedOut
+                }
+                
+                do {
+                    for try await _ in taskGroup.prefix(1) {
+                        taskGroup.cancelAll()
+                        break
                     }
+                } catch OperationError.timedOut {
+                    let operation = await self.operationActor.operation
+                    operation?.presentsFinishedNotification = true
+                    try await self.requestToContinueInForeground()
                 }
-
-                guard let operation else {
-                    continuation.resume(throwing: OperationError.unknownResult)
-                    return
-                }
-
-                operation.ignoresServerNotFoundError = false
-                self.progress.addChild(operation.progress, withPendingUnitCount: 1)
             }
 
             return .result(dialog: "Cellular Refresh 1 hoàn tất.")
         } catch {
             CellularRefreshManager.shared.isShortcutTwoStageMode = false
             throw IntentError(error)
+        }
+    }
+
+    private func runStage1() async throws {
+        try await DatabaseManager.shared.start()
+        let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+        let installedApps = await context.perform { InstalledApp.fetchAppsForRefreshingAll(in: context) }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: false) { result in
+                do {
+                    let results = try result.get()
+                    for (_, res) in results {
+                        guard case let .failure(error) = res else { continue }
+                        throw error
+                    }
+                    continuation.resume()
+                } catch OperationError.noInstalledApps {
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+
+            guard let operation else {
+                continuation.resume(throwing: OperationError.unknownResult)
+                return
+            }
+
+            operation.ignoresServerNotFoundError = true
+            self.progress.addChild(operation.progress, withPendingUnitCount: 1)
+            
+            Task {
+                await self.operationActor.set(operation)
+            }
         }
     }
 }
@@ -320,7 +339,6 @@ struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent
                 return .result(dialog: "Không có ứng dụng nào chờ làm mới.")
             }
 
-            // Đợi kết nối Minimuxer sẵn sàng sau khi tắt 4G
             _ = await CellularRefreshManager.shared.waitForMinimuxerReady(timeout: 3.0)
 
             let dbContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
