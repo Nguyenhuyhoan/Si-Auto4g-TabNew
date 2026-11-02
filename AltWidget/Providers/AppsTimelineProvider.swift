@@ -1,3 +1,4 @@
+
 //
 //  AppsTimelineProvider.swift
 //  AltWidgetExtension
@@ -108,48 +109,46 @@ extension AppsTimelineProviderBase
             return [Entry(date: Date(), apps: [], context: context)]
         }
         
-        let currentDate = Calendar.current.startOfDay(for: Date())
-        let numberOfDays = lastExpiringApp.expirationDate.numberOfCalendarDays(since: currentDate)
+        // Lấy thời gian thực tế hiện tại (thay vì 0h sáng như code cũ)
+        let now = Date()
         
-        // Generate a timeline consisting of one entry per day.
+        // Nếu tất cả các app đều đã hết hạn
+        if lastExpiringApp.expirationDate <= now {
+            let entry = Entry(date: now, relevance: TimelineEntryRelevance(score: 1.0), apps: snapshots, context: context)
+            return [entry]
+        }
+        
         var entries: [AppsEntry<T>] = []
         
-        switch numberOfDays
-        {
-        case ..<0:
-            let entry = Entry(date: currentDate, relevance: TimelineEntryRelevance(score: 0.0), apps: snapshots, context: context)
-            entries.append(entry)
+        // Tạo lịch trình cập nhật mỗi 1 tiếng cho 24 giờ tiếp theo.
+        // Sau 24 giờ, hệ thống sẽ tự động gọi lại hàm này để lấy 24 giờ mới (nhờ policy: .atEnd).
+        let maxHours = 24
+        
+        for hourOffset in 0 ... maxHours {
+            guard let entryDate = Calendar.current.date(byAdding: .hour, value: hourOffset, to: now) else { continue }
             
-        case 0:
-            let entry = Entry(date: currentDate, relevance: TimelineEntryRelevance(score: 1.0), apps: snapshots, context: context)
-            entries.append(entry)
+            // Tính điểm ưu tiên (Relevance score) để hiển thị trên Smart Stack của iOS
+            let timeSinceRefresh = entryDate.timeIntervalSince(firstExpiringApp.refreshedDate)
+            let totalTime = firstExpiringApp.expirationDate.timeIntervalSince(firstExpiringApp.refreshedDate)
             
-        default:
-            // To reduce memory consumption, we only generate entries for the next week. This includes:
-            // * 1 for each day the "least expired" app is valid (up to 7)
-            // * 1 "0 days remaining"
-            // * 1 "Expired"
-            
-            let numberOfEntries = min(numberOfDays, 7) + 2
-            
-            let appEntries = (0 ..< numberOfEntries).map { (dayOffset) -> Entry in
-                let entryDate = Calendar.current.date(byAdding: .day, value: dayOffset, to: currentDate) ?? currentDate.addingTimeInterval(Double(dayOffset) * 60 * 60 * 24)
-                                
-                let daysSinceRefresh = entryDate.numberOfCalendarDays(since: firstExpiringApp.refreshedDate)
-                let totalNumberOfDays = firstExpiringApp.expirationDate.numberOfCalendarDays(since: firstExpiringApp.refreshedDate)
-                
-                var score = (entryDate <= firstExpiringApp.expirationDate) ? Float(daysSinceRefresh + 1) / Float(totalNumberOfDays + 1) : 1 // Expired apps have a score of 1.
-                if snapshots.allSatisfy({ $0.expirationDate > currentDate })
-                {
-                    // Unless ALL apps are expired, in which case relevance is 0.
-                    score = 0
-                }
-                
-                let entry = Entry(date: entryDate, relevance: TimelineEntryRelevance(score: score), apps: snapshots, context: context)
-                return entry
+            var score: Float = 0.0
+            if totalTime > 0 {
+                score = (entryDate <= firstExpiringApp.expirationDate) ? Float(timeSinceRefresh / totalTime) : 1.0
+            } else {
+                score = 1.0
             }
             
-            entries.append(contentsOf: appEntries)
+            if snapshots.allSatisfy({ $0.expirationDate > entryDate }) {
+                score = 0.0
+            }
+            
+            let entry = Entry(date: entryDate, relevance: TimelineEntryRelevance(score: score), apps: snapshots, context: context)
+            entries.append(entry)
+            
+            // Dừng tạo thêm lịch nếu mốc thời gian này đã vượt qua hạn của tất cả các app
+            if entryDate >= lastExpiringApp.expirationDate {
+                break
+            }
         }
         
         return entries
