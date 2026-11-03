@@ -14,6 +14,7 @@ import Minimuxer
 private struct PersistedProfileBatch: Codable {
     let bundleID: String
     let profiles: [Data]
+    let timestamp: TimeInterval
 }
 
 public final class CellularRefreshManager: @unchecked Sendable {
@@ -35,6 +36,25 @@ public final class CellularRefreshManager: @unchecked Sendable {
 
     private var stagedBatchesFileURL: URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("cellular_staged_batches.json")
+    }
+
+    /// Kiểm tra xem có dữ liệu Profile của Bước 1 vừa lưu trong vòng 180 giây qua không
+    public var hasRecentStagedBatches: Bool {
+        lock.withLock {
+            guard let data = try? Data(contentsOf: stagedBatchesFileURL),
+                  let persisted = try? JSONDecoder().decode([PersistedProfileBatch].self, from: data),
+                  let first = persisted.first else {
+                return false
+            }
+            let age = Date().timeIntervalSince1970 - first.timestamp
+            if age <= 180 {
+                return true
+            } else {
+                try? FileManager.default.removeItem(at: stagedBatchesFileURL)
+                cachedStagedBatches = []
+                return false
+            }
+        }
     }
 
     private var cachedStagedBatches: [PendingProfileBatch] = []
@@ -60,8 +80,9 @@ public final class CellularRefreshManager: @unchecked Sendable {
                 if newValue.isEmpty {
                     try? FileManager.default.removeItem(at: stagedBatchesFileURL)
                 } else {
+                    let now = Date().timeIntervalSince1970
                     let persisted = newValue.map {
-                        PersistedProfileBatch(bundleID: $0.bundleID, profiles: $0.profiles)
+                        PersistedProfileBatch(bundleID: $0.bundleID, profiles: $0.profiles, timestamp: now)
                     }
                     if let data = try? JSONEncoder().encode(persisted) {
                         try? data.write(to: stagedBatchesFileURL, options: .atomic)
