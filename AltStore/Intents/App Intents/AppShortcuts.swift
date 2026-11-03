@@ -1,3 +1,4 @@
+
 //
 //  AppShortcuts.swift
 //  AltStore
@@ -14,27 +15,21 @@ public struct ShortcutsProvider: AppShortcutsProvider
     public static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: RefreshAllAppsIntent(),
                     phrases: [
+                        "Refresh All Wifi with \(.applicationName)",
                         "Refresh \(.applicationName)",
                         "Refresh \(.applicationName) apps",
                         "Refresh my \(.applicationName) apps",
                         "Refresh apps with \(.applicationName)",
                     ],
-                    shortTitle: "Refresh All Apps",
-                    systemImageName: "arrow.triangle.2.circlepath")
+                    shortTitle: "Refresh All Wifi",
+                    systemImageName: "wifi")
 
-        AppShortcut(intent: CellularRefresh1Intent(),
+        AppShortcut(intent: RefreshAll4GIntent(),
                     phrases: [
-                        "Cellular Refresh 1 with \(.applicationName)"
+                        "Refresh All 4g with \(.applicationName)"
                     ],
-                    shortTitle: "Cellular Refresh 1",
+                    shortTitle: "Refresh All 4g",
                     systemImageName: "antenna.radiowaves.left.and.right")
-
-        AppShortcut(intent: CellularRefresh2Intent(),
-                    phrases: [
-                        "Cellular Refresh 2 with \(.applicationName)"
-                    ],
-                    shortTitle: "Cellular Refresh 2",
-                    systemImageName: "checkmark.shield")
 
         AppShortcut(intent: InstallIPAIntent(),
                     phrases: [
