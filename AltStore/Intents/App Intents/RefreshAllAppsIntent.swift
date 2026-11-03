@@ -95,7 +95,7 @@ public enum RefreshModeAppEnum: String, AppEnum, Sendable
 
     public static var caseDisplayRepresentations: [RefreshModeAppEnum: DisplayRepresentation] {
         [
-            .wifi: DisplayRepresentation(title: "Refresh All Wifi"),
+            .wifi: DisplayRepresentation(title: "Refresh All Wifi/4G"),
             .cellular4g: DisplayRepresentation(title: "Refresh All 4g")
         ]
     }
@@ -120,7 +120,7 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
 {
     static let intentClassName = "RefreshAllIntent"
     
-    static var title: LocalizedStringResource = "Refresh All Wifi"
+    static var title: LocalizedStringResource = "Refresh All Wifi/4G"
     static var description = IntentDescription("Refreshes your sideloaded apps to prevent them from expiring.")
     
     @Parameter(title: "Mode", default: .wifi)
@@ -133,7 +133,7 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     static var predictionConfiguration: some IntentPredictionConfiguration {
         IntentPrediction(parameters: (\.$mode)) { mode in
             DisplayRepresentation(
-                title: mode == .cellular4g ? "Refresh All 4g" : "Refresh All Wifi",
+                title: mode == .cellular4g ? "Refresh All 4g" : "Refresh All Wifi/4G",
                 subtitle: ""
             )
         }
