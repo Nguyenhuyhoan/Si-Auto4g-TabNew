@@ -1,3 +1,4 @@
+
 //
 //  InjectBatchProfilesOperation.swift
 //  SideStore
@@ -50,17 +51,16 @@ final class InjectBatchProfilesOperation: BaseStandaloneOperation<StandaloneOper
 
         debugLog("[InjectBatchProfilesOperation] Running batch injection for \(sortedBatches.count) app(s)")
 
-        // Tắt 4G đúng 1 lần duy nhất (nếu chạy trong app; nếu chạy qua Shortcut 2 giai đoạn thì hàm này tự bỏ qua)
+        // Tắt 4G đúng 1 lần duy nhất (nếu chạy trong app; nếu chạy qua Shortcut 2 giai đoạn thì tự bỏ qua)
         await CellularRefreshManager.shared.turnOffDataIfNeeded()
         
-        // Đảm bảo EMProxy và Minimuxer đã được khởi chạy (đặc biệt quan trọng khi chạy ngầm không mở app trước)
+        // Khởi động EMProxy và Minimuxer giống hệt Wi-Fi Refresh (vì ở Bước 1 đã bỏ qua ensureMinimuxerReady)
         if UserDefaults.standard.enableEMPforWireguard {
             try? await startEMProxy()
         }
-        _ = await CellularRefreshManager.shared.waitForMinimuxerReady(timeout: 6.0)
+        _ = await CellularRefreshManager.shared.waitForMinimuxerReady(timeout: 5.0)
+        try? await ensureMinimuxerReady()
         
-        let dbContext = self.context.dbBackgroundContext
-
         do {
             for batch in sortedBatches {
                 debugLog("[InjectBatchProfilesOperation] Installing \(batch.profiles.count) profile(s) for \(batch.bundleID)...")
@@ -68,23 +68,20 @@ final class InjectBatchProfilesOperation: BaseStandaloneOperation<StandaloneOper
                     do {
                         try await installProvisioningProfiles(profileData)
                     } catch {
-                        debugLog("[InjectBatchProfilesOperation] First attempt failed for \(batch.bundleID), retrying after refreshing minimuxer: \(error)")
-                        _ = await CellularRefreshManager.shared.waitForMinimuxerReady(timeout: 4.0)
+                        debugLog("[InjectBatchProfilesOperation] First attempt failed for \(batch.bundleID), retrying: \(error)")
+                        _ = await CellularRefreshManager.shared.waitForMinimuxerReady(timeout: 3.0)
                         try await installProvisioningProfiles(profileData)
                     }
                 }
 
-                // Cập nhật trạng thái chứng chỉ vào Database thông qua dbContext hiện tại (tránh crash do context cũ đã đóng)
-                if let certStatus = batch.certStatus {
+                if let installedApp = batch.app, let dbContext = installedApp.managedObjectContext {
+                    debugLog("[InjectBatchProfilesOperation] Updating database record for \(batch.bundleID)...")
                     try? await dbContext.perform {
-                        let fetchRequest = InstalledApp.fetchRequest() as! NSFetchRequest<InstalledApp>
-                        fetchRequest.predicate = NSPredicate(format: "%K == %@", #keyPath(InstalledApp.bundleIdentifier), batch.bundleID)
-                        fetchRequest.fetchLimit = 1
-                        if let app = try dbContext.fetch(fetchRequest).first {
-                            app.certificateStatus = certStatus
-                            if dbContext.hasChanges {
-                                try dbContext.save()
-                            }
+                        if let certStatus = batch.certStatus {
+                            installedApp.certificateStatus = certStatus
+                        }
+                        if dbContext.hasChanges {
+                            try dbContext.save()
                         }
                     }
                 }
