@@ -32,7 +32,7 @@
 					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
 					<true/>
 					<key>INIntentParameterCombinationTitle</key>
-					<string>Refresh All Wifi 4G</string>
+					<string>Refresh All Wifi/4G</string>
 					<key>INIntentParameterCombinationTitleID</key>
 					<string>cJxa2I</string>
 					<key>INIntentParameterCombinationUpdatesLinked</key>
@@ -48,7 +48,7 @@
 					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
 					<true/>
 					<key>INIntentParameterCombinationTitle</key>
-					<string>Refresh All Wifi 4G</string>
+					<string>Refresh All Wifi/4G</string>
 					<key>INIntentParameterCombinationTitleID</key>
 					<string>DKTGdO</string>
 				</dict>
@@ -105,7 +105,7 @@
 				</array>
 			</dict>
 			<key>INIntentTitle</key>
-			<string>Refresh All Wifi</string>
+			<string>Refresh All Wifi/4G</string>
 			<key>INIntentTitleID</key>
 			<string>2b6Xto</string>
 			<key>INIntentType</key>
