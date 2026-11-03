@@ -1,3 +1,4 @@
+
 //
 //  RefreshAllAppsIntent.swift
 //  AltStore
@@ -100,17 +101,17 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
 {
     static let intentClassName = "RefreshAllIntent"
     
-    static var title: LocalizedStringResource = "Refresh All Apps"
+    static var title: LocalizedStringResource = "Refresh All Wifi"
     static var description = IntentDescription("Refreshes your sideloaded apps to prevent them from expiring.")
     
     static var parameterSummary: some ParameterSummary {
-        Summary("Refresh All Apps")
+        Summary("Refresh All Wifi")
     }
     
     static var predictionConfiguration: some IntentPredictionConfiguration {
         IntentPrediction {
             DisplayRepresentation(
-                title: "Refresh All Apps",
+                title: "Refresh All Wifi",
                 subtitle: ""
             )
         }
@@ -177,7 +178,7 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
 }
 
 @available(iOS 17.0, tvOS 17.0, *)
-private extension RefreshAllAppsIntent
+extension RefreshAllAppsIntent
 {
     func refreshAllApps() async throws
     {
@@ -259,129 +260,35 @@ private extension RefreshAllAppsIntent
 }
 
 @available(iOS 17.0, tvOS 17.0, *)
-struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundContinuableIntent
+struct RefreshAll4GIntent: AppIntent, PredictableIntent, ProgressReportingIntent, ForegroundContinuableIntent
 {
-    static var title: LocalizedStringResource = "Cellular Refresh 1"
-    static var description = IntentDescription("Giai đoạn 1: Tải Provisioning Profile qua 4G và lưu tạm.")
-    static var openAppWhenRun: Bool = false
+    static var title: LocalizedStringResource = "Refresh All 4g"
+    static var description = IntentDescription("Làm mới tất cả ứng dụng bằng 4G (Tự động phân biệt Giai đoạn 1 và Giai đoạn 2).")
 
-    private let operationActor = RefreshAllAppsIntent.OperationActor()
+    static var parameterSummary: some ParameterSummary {
+        Summary("Refresh All 4g")
+    }
 
-    init() {
+    static var predictionConfiguration: some IntentPredictionConfiguration {
+        IntentPrediction {
+            DisplayRepresentation(
+                title: "Refresh All 4g",
+                subtitle: ""
+            )
+        }
+    }
+
+    init()
+    {
         self.progress.completedUnitCount = 0
         self.progress.totalUnitCount = 1
     }
 
     func perform() async throws -> some IntentResult & ProvidesDialog
     {
-        CellularRefreshManager.shared.isShortcutTwoStageMode = true
-        CellularRefreshManager.shared.stagedBatches = []
-
-        do {
-            let deadline: ContinuousClock.Instant = .now + .seconds(27)
-            
-            try await withThrowingTaskGroup(of: Void.self) { taskGroup in
-                taskGroup.addTask {
-                    try await self.runStage1()
-                }
-                
-                taskGroup.addTask {
-                    try await Task.sleep(until: deadline)
-                    throw OperationError.timedOut
-                }
-                
-                do {
-                    for try await _ in taskGroup.prefix(1) {
-                        taskGroup.cancelAll()
-                        break
-                    }
-                } catch OperationError.timedOut {
-                    let operation = await self.operationActor.operation
-                    operation?.presentsFinishedNotification = true
-                    try await self.requestToContinueInForeground()
-                }
-            }
-
-            return .result(dialog: "Cellular Refresh 1 hoàn tất.")
-        } catch {
-            CellularRefreshManager.shared.isShortcutTwoStageMode = false
-            throw IntentError(error)
-        }
-    }
-
-    private func runStage1() async throws {
-        try await DatabaseManager.shared.start()
-        let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-        let installedApps = await context.perform { InstalledApp.fetchAppsForRefreshingAll(in: context) }
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: false) { result in
-                do {
-                    let results = try result.get()
-                    for (_, res) in results {
-                        guard case let .failure(error) = res else { continue }
-                        throw error
-                    }
-                    continuation.resume()
-                } catch OperationError.noInstalledApps {
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-
-            guard let operation else {
-                continuation.resume(throwing: OperationError.unknownResult)
-                return
-            }
-
-            operation.ignoresServerNotFoundError = true
-            self.progress.addChild(operation.progress, withPendingUnitCount: 1)
-            
-            Task {
-                await self.operationActor.set(operation)
-            }
-        }
-    }
-}
-
-@available(iOS 17.0, tvOS 17.0, *)
-struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent
-{
-    static var title: LocalizedStringResource = "Cellular Refresh 2"
-    static var description = IntentDescription("Giai đoạn 2: Tiêm Profile vào máy khi đã tắt 4G.")
-    static var openAppWhenRun: Bool = false
-
-    init() {
-        self.progress.completedUnitCount = 0
-        self.progress.totalUnitCount = 1
-    }
-
-    func perform() async throws -> some IntentResult & ProvidesDialog
-    {
-        defer {
-            CellularRefreshManager.shared.isShortcutTwoStageMode = false
-            CellularRefreshManager.shared.stagedBatches = []
-        }
-
-        do {
-            try await DatabaseManager.shared.start()
-            let batches = CellularRefreshManager.shared.stagedBatches
-            guard !batches.isEmpty else {
-                return .result(dialog: "Không có ứng dụng nào chờ làm mới.")
-            }
-
-            let dbContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-            let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: dbContext)
-            let injectOp = try InjectBatchProfilesOperation(batches: batches, context: injectContext)
-            try await injectOp.execute()
-
-            await WidgetDataManager.publishCurrentInstalledApps(in: dbContext)
-            self.progress.completedUnitCount = 1
-
-            return .result(dialog: "Đã làm mới tất cả ứng dụng bằng 4G!")
-        } catch {
-            throw IntentError(error)
-        }
+        // Gọi trực tiếp sang RefreshAllAppsIntent (Refresh All Wifi) để xử lý tự động 2 giai đoạn
+        let wifiIntent = RefreshAllAppsIntent(presentsNotifications: false)
+        self.progress.addChild(wifiIntent.progress, withPendingUnitCount: 1)
+        return try await wifiIntent.perform()
     }
 }
