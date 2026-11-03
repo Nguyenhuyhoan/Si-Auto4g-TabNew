@@ -1,4 +1,3 @@
-
 //
 //  RefreshAllAppsIntent.swift
 //  AltStore
@@ -8,7 +7,7 @@
 //
 
 import AppIntents
-@preconcurrency import UIKit
+import Minimuxer
 
 @available(iOS 16, tvOS 16, *)
 class IntentError: NSError, CustomLocalizedStringResourceConvertible, @unchecked Sendable
@@ -183,68 +182,79 @@ private extension RefreshAllAppsIntent
     func refreshAllApps() async throws
     {
         try await DatabaseManager.shared.start()
-        
+
+        // 1. KIỂM TRA NẾU ĐÃ CÓ PROFILE LƯU TẠM TỪ GIAI ĐOẠN 1 (TRONG VÒNG 3 PHÚT) -> CHẠY GIAI ĐOẠN 2 TIÊM PROFILE!
+        if CellularRefreshManager.shared.hasRecentStagedBatches {
+            defer {
+                CellularRefreshManager.shared.isShortcutTwoStageMode = false
+                CellularRefreshManager.shared.stagedBatches = []
+            }
+            let batches = CellularRefreshManager.shared.stagedBatches
+            if !batches.isEmpty {
+                let dbContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+                let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: dbContext)
+                let injectOp = try InjectBatchProfilesOperation(batches: batches, context: injectContext)
+                try await injectOp.execute()
+                await WidgetDataManager.publishCurrentInstalledApps(in: dbContext)
+                self.progress.completedUnitCount = 1
+                return
+            }
+        }
+
+        // 2. NẾU KHÔNG CÓ WI-FI (ĐANG CHẠY PHÍM TẮT 4G BƯỚC 1) -> TỰ ĐỘNG BẬT CHẾ ĐỘ LƯU TẠM 2 GIAI ĐOẠN!
+        let isWifi = minimuxer.network.isWifiSatisfied
+        if !isWifi {
+            CellularRefreshManager.shared.isShortcutTwoStageMode = true
+            CellularRefreshManager.shared.stagedBatches = []
+        }
+
         let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         let installedApps = await context.perform { InstalledApp.fetchAppsForRefreshingAll(in: context) }
         
-        try await withCheckedThrowingContinuation { continuation in
-            let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: self.presentsNotifications) { (result) in
-                do
-                {
-                    let results = try result.get()
-                    
-                    for (_, result) in results
+        do {
+            try await withCheckedThrowingContinuation { continuation in
+                let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: isWifi ? self.presentsNotifications : false) { (result) in
+                    do
                     {
-                        guard case let .failure(error) = result else { continue }
-                        throw error
+                        let results = try result.get()
+                        
+                        for (_, result) in results
+                        {
+                            guard case let .failure(error) = result else { continue }
+                            throw error
+                        }
+                        
+                        continuation.resume()
                     }
-                    
+                    catch OperationError.noInstalledApps
+                    {
+                        continuation.resume()
+                    }
+                    catch
+                    {
+                        continuation.resume(throwing: error)
+                    }
+                }
+                
+                guard let operation else {
+                    debugLog("[RefreshAllAppsIntent] backgroundRefresh instance is nil")
                     continuation.resume()
+                    return 
                 }
-                catch OperationError.noInstalledApps
-                {
-                    continuation.resume()
-                }
-                catch
-                {
-                    continuation.resume(throwing: error)
+                
+                operation.ignoresServerNotFoundError = !isWifi
+                
+                self.progress.addChild(operation.progress, withPendingUnitCount: 1)
+                
+                Task {
+                    await self.operationActor.set(operation)
                 }
             }
-            
-            guard let operation else {
-                debugLog("[RefreshAllAppsIntent] backgroundRefresh instance is nil")
-                return 
-            }
-            
-            operation.ignoresServerNotFoundError = false
-            
-            self.progress.addChild(operation.progress, withPendingUnitCount: 1)
-            
-            Task {
-                await self.operationActor.set(operation)
-            }
+            CellularRefreshManager.shared.isShortcutTwoStageMode = false
+        } catch {
+            CellularRefreshManager.shared.isShortcutTwoStageMode = false
+            throw error
         }
-    }
-}
-
-// MARK: - Cellular Refresh Two-Stage Shortcut Support
-
-@MainActor private var shortcutBridgeBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
-
-@MainActor private func beginShortcutBridgeBackgroundTask() {
-    if shortcutBridgeBackgroundTaskID != .invalid {
-        UIApplication.shared.endBackgroundTask(shortcutBridgeBackgroundTaskID)
-    }
-    shortcutBridgeBackgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "com.sidestore.CellularShortcutBridge") {
-        UIApplication.shared.endBackgroundTask(shortcutBridgeBackgroundTaskID)
-        shortcutBridgeBackgroundTaskID = .invalid
-    }
-}
-
-@MainActor private func endShortcutBridgeBackgroundTask() {
-    if shortcutBridgeBackgroundTaskID != .invalid {
-        UIApplication.shared.endBackgroundTask(shortcutBridgeBackgroundTaskID)
-        shortcutBridgeBackgroundTaskID = .invalid
     }
 }
 
@@ -264,8 +274,6 @@ struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundCon
 
     func perform() async throws -> some IntentResult & ProvidesDialog
     {
-        await beginShortcutBridgeBackgroundTask()
-
         CellularRefreshManager.shared.isShortcutTwoStageMode = true
         CellularRefreshManager.shared.stagedBatches = []
 
@@ -289,7 +297,7 @@ struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundCon
                     }
                 } catch OperationError.timedOut {
                     let operation = await self.operationActor.operation
-                    operation?.presentsFinishedNotification = false
+                    operation?.presentsFinishedNotification = true
                     try await self.requestToContinueInForeground()
                 }
             }
@@ -297,7 +305,6 @@ struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundCon
             return .result(dialog: "Cellular Refresh 1 hoàn tất.")
         } catch {
             CellularRefreshManager.shared.isShortcutTwoStageMode = false
-            await endShortcutBridgeBackgroundTask()
             throw IntentError(error)
         }
     }
@@ -339,7 +346,7 @@ struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundCon
 }
 
 @available(iOS 17.0, tvOS 17.0, *)
-struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent, ForegroundContinuableIntent
+struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent
 {
     static var title: LocalizedStringResource = "Cellular Refresh 2"
     static var description = IntentDescription("Giai đoạn 2: Tiêm Profile vào máy khi đã tắt 4G.")
@@ -352,61 +359,29 @@ struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent, ForegroundCon
 
     func perform() async throws -> some IntentResult & ProvidesDialog
     {
-        await beginShortcutBridgeBackgroundTask()
-
         defer {
             CellularRefreshManager.shared.isShortcutTwoStageMode = false
             CellularRefreshManager.shared.stagedBatches = []
-            Task { @MainActor in
-                endShortcutBridgeBackgroundTask()
-            }
         }
 
         do {
-            let deadline: ContinuousClock.Instant = .now + .seconds(27)
-            
-            try await withThrowingTaskGroup(of: Void.self) { taskGroup in
-                taskGroup.addTask {
-                    try await self.runStage2()
-                }
-                
-                taskGroup.addTask {
-                    try await Task.sleep(until: deadline)
-                    throw OperationError.timedOut
-                }
-                
-                do {
-                    for try await _ in taskGroup.prefix(1) {
-                        taskGroup.cancelAll()
-                        break
-                    }
-                } catch OperationError.timedOut {
-                    try await self.requestToContinueInForeground()
-                }
+            try await DatabaseManager.shared.start()
+            let batches = CellularRefreshManager.shared.stagedBatches
+            guard !batches.isEmpty else {
+                return .result(dialog: "Không có ứng dụng nào chờ làm mới.")
             }
+
+            let dbContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+            let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: dbContext)
+            let injectOp = try InjectBatchProfilesOperation(batches: batches, context: injectContext)
+            try await injectOp.execute()
+
+            await WidgetDataManager.publishCurrentInstalledApps(in: dbContext)
+            self.progress.completedUnitCount = 1
 
             return .result(dialog: "Đã làm mới tất cả ứng dụng bằng 4G!")
         } catch {
             throw IntentError(error)
         }
-    }
-
-    private func runStage2() async throws {
-        try await DatabaseManager.shared.start()
-        let batches = CellularRefreshManager.shared.stagedBatches
-        guard !batches.isEmpty else {
-            return
-        }
-
-        // Chờ 1.5s để bảng định tuyến (Routing Table) của iOS ngắt hẳn 4G khi màn hình tắt
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-
-        let dbContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-        let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: dbContext)
-        let injectOp = try InjectBatchProfilesOperation(batches: batches, context: injectContext)
-        try await injectOp.execute()
-
-        await WidgetDataManager.publishCurrentInstalledApps(in: dbContext)
-        self.progress.completedUnitCount = 1
     }
 }
