@@ -264,7 +264,6 @@ struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundCon
 
     func perform() async throws -> some IntentResult & ProvidesDialog
     {
-        // Giữ cho tiến trình LiveContainer/SideStore sống ngầm xuyên suốt từ Bước 1 sang Bước 2 khi màn hình tắt
         await beginShortcutBridgeBackgroundTask()
 
         CellularRefreshManager.shared.isShortcutTwoStageMode = true
@@ -353,7 +352,6 @@ struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent, ForegroundCon
 
     func perform() async throws -> some IntentResult & ProvidesDialog
     {
-        // Tiếp tục gia hạn Background Task trong suốt quá trình tiêm Profile khi màn hình khóa
         await beginShortcutBridgeBackgroundTask()
 
         defer {
@@ -400,19 +398,8 @@ struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent, ForegroundCon
             return
         }
 
-        // Chờ 1.5s để bảng định tuyến (Routing Table) của iOS ngắt hẳn 4G và chuyển hoàn toàn sang LocalDevVPN khi màn hình tắt
+        // Chờ 1.5s để bảng định tuyến (Routing Table) của iOS ngắt hẳn 4G khi màn hình tắt
         try? await Task.sleep(nanoseconds: 1_500_000_000)
-
-        // Khởi động lại EMProxy giống hệt luồng Wi-Fi Refresh trong BackgroundRefreshAppsOperation
-        if UserDefaults.standard.enableEMPforWireguard {
-            try? await startEMProxy()
-        }
-
-        // Đảm bảo Minimuxer đã sẵn sàng nhận kết nối qua VPN
-        let isReady = await CellularRefreshManager.shared.waitForMinimuxerReady(timeout: 8.0)
-        if !isReady {
-            try? await ensureMinimuxerReady()
-        }
 
         let dbContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: dbContext)
