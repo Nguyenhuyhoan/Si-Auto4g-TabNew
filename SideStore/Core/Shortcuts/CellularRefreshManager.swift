@@ -14,7 +14,6 @@ import Minimuxer
 private struct PersistedProfileBatch: Codable {
     let bundleID: String
     let profiles: [Data]
-    let certStatus: String?
 }
 
 public final class CellularRefreshManager: @unchecked Sendable {
@@ -45,13 +44,12 @@ public final class CellularRefreshManager: @unchecked Sendable {
                 if !cachedStagedBatches.isEmpty {
                     return cachedStagedBatches
                 }
-                // Nếu app bị iOS đóng băng/khởi động lại giữa Bước 1 và Bước 2 khi tắt màn hình, khôi phục từ ổ cứng
                 guard let data = try? Data(contentsOf: stagedBatchesFileURL),
                       let persisted = try? JSONDecoder().decode([PersistedProfileBatch].self, from: data) else {
                     return []
                 }
                 cachedStagedBatches = persisted.map {
-                    PendingProfileBatch(bundleID: $0.bundleID, profiles: $0.profiles, app: nil, certStatus: $0.certStatus)
+                    PendingProfileBatch(bundleID: $0.bundleID, profiles: $0.profiles, app: nil, certStatus: nil)
                 }
                 return cachedStagedBatches
             }
@@ -63,7 +61,7 @@ public final class CellularRefreshManager: @unchecked Sendable {
                     try? FileManager.default.removeItem(at: stagedBatchesFileURL)
                 } else {
                     let persisted = newValue.map {
-                        PersistedProfileBatch(bundleID: $0.bundleID, profiles: $0.profiles, certStatus: $0.certStatus)
+                        PersistedProfileBatch(bundleID: $0.bundleID, profiles: $0.profiles)
                     }
                     if let data = try? JSONEncoder().encode(persisted) {
                         try? data.write(to: stagedBatchesFileURL, options: .atomic)
@@ -214,18 +212,13 @@ public final class CellularRefreshManager: @unchecked Sendable {
     public func waitForMinimuxerReady(timeout: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         debugLog("[CellularRefreshManager] Waiting for minimuxer endpoint to become ready (timeout: \(timeout)s)...")
-        
-        // Khởi động Minimuxer nếu app chưa được mở trước đó (chạy hoàn toàn dưới nền khi tắt màn hình)
-        try? await ensureMinimuxerReady()
-        
         while Date() < deadline {
             await minimuxer.network.refreshEndpoint()
             if case .success(true) = await minimuxer.core.isReady(withNetworkCheck: false) {
                 debugLog("[CellularRefreshManager] Minimuxer is ready.")
                 return true
             }
-            try? await ensureMinimuxerReady()
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await Task.sleep(nanoseconds: 200_000_000)
         }
         debugLog("[CellularRefreshManager] Timed out waiting for minimuxer to become ready.")
         return false
@@ -234,12 +227,10 @@ public final class CellularRefreshManager: @unchecked Sendable {
     // public apis
     @discardableResult
     public func turnOffDataIfNeeded(addOnDelay: TimeInterval = 0) async -> Bool {
-        // Nếu đang chạy bằng Phím tắt 2 giai đoạn thì bỏ qua lệnh mở URL
         guard !isShortcutTwoStageMode else { return false }
         guard isSupported && isEnabled else { return false }
         guard !didTurnOffData else { return false }
 
-        // If Wi-Fi is active, skip running cellular toggle shortcuts
         guard !minimuxer.network.isWifiSatisfied else {
             debugLog("[CellularRefreshManager] Wi-Fi is active, skipping turnOff shortcut.")
             return false
