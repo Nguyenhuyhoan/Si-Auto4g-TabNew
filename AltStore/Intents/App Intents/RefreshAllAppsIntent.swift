@@ -1,4 +1,5 @@
 
+
 //
 //  RefreshAllAppsIntent.swift
 //  AltStore
@@ -83,6 +84,24 @@ struct InstallIPAIntent: AppIntent, ProgressReportingIntent
 
 
 @available(iOS 17.0, tvOS 17.0, *)
+public enum RefreshModeAppEnum: String, AppEnum, Sendable
+{
+    case wifi = "wifi"
+    case cellular4g = "4g"
+
+    public static var typeDisplayRepresentation: TypeDisplayRepresentation {
+        TypeDisplayRepresentation(name: "Chế độ Refresh")
+    }
+
+    public static var caseDisplayRepresentations: [RefreshModeAppEnum: DisplayRepresentation] {
+        [
+            .wifi: DisplayRepresentation(title: "Refresh All Wifi"),
+            .cellular4g: DisplayRepresentation(title: "Refresh All 4g")
+        ]
+    }
+}
+
+@available(iOS 17.0, tvOS 17.0, *)
 extension RefreshAllAppsIntent
 {
     actor OperationActor
@@ -104,14 +123,17 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     static var title: LocalizedStringResource = "Refresh All Wifi"
     static var description = IntentDescription("Refreshes your sideloaded apps to prevent them from expiring.")
     
+    @Parameter(title: "Mode", default: .wifi)
+    var mode: RefreshModeAppEnum
+    
     static var parameterSummary: some ParameterSummary {
-        Summary("Refresh All Wifi")
+        Summary("\(\.$mode)")
     }
     
     static var predictionConfiguration: some IntentPredictionConfiguration {
-        IntentPrediction {
+        IntentPrediction(parameters: (\.$mode)) { mode in
             DisplayRepresentation(
-                title: "Refresh All Wifi",
+                title: mode == .cellular4g ? "Refresh All 4g" : "Refresh All Wifi",
                 subtitle: ""
             )
         }
@@ -121,9 +143,10 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     
     private let operationActor = OperationActor()
     
-    init(presentsNotifications: Bool)
+    init(presentsNotifications: Bool, mode: RefreshModeAppEnum = .wifi)
     {
         self.presentsNotifications = presentsNotifications
+        self.mode = mode
         
         self.progress.completedUnitCount = 0
         self.progress.totalUnitCount = 1
@@ -131,7 +154,7 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     
     init()
     {
-        self.init(presentsNotifications: false)
+        self.init(presentsNotifications: false, mode: .wifi)
     }
     
     func perform() async throws -> some IntentResult & ProvidesDialog
@@ -178,7 +201,7 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
 }
 
 @available(iOS 17.0, tvOS 17.0, *)
-extension RefreshAllAppsIntent
+private extension RefreshAllAppsIntent
 {
     func refreshAllApps() async throws
     {
@@ -202,9 +225,9 @@ extension RefreshAllAppsIntent
             }
         }
 
-        // 2. NẾU KHÔNG CÓ WI-FI (ĐANG CHẠY PHÍM TẮT 4G BƯỚC 1) -> TỰ ĐỘNG BẬT CHẾ ĐỘ LƯU TẠM 2 GIAI ĐOẠN!
-        let isWifi = minimuxer.network.isWifiSatisfied
-        if !isWifi {
+        // 2. NẾU CHỌN "Refresh All 4g" HOẶC KHÔNG CÓ WI-FI -> TỰ ĐỘNG BẬT CHẾ ĐỘ LƯU TẠM 2 GIAI ĐOẠN!
+        let isFourGMode = (self.mode == .cellular4g) || !minimuxer.network.isWifiSatisfied
+        if isFourGMode {
             CellularRefreshManager.shared.isShortcutTwoStageMode = true
             CellularRefreshManager.shared.stagedBatches = []
         }
@@ -214,7 +237,7 @@ extension RefreshAllAppsIntent
         
         do {
             try await withCheckedThrowingContinuation { continuation in
-                let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: isWifi ? self.presentsNotifications : false) { (result) in
+                let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: !isFourGMode ? self.presentsNotifications : false) { (result) in
                     do
                     {
                         let results = try result.get()
@@ -243,7 +266,7 @@ extension RefreshAllAppsIntent
                     return 
                 }
                 
-                operation.ignoresServerNotFoundError = !isWifi
+                operation.ignoresServerNotFoundError = isFourGMode
                 
                 self.progress.addChild(operation.progress, withPendingUnitCount: 1)
                 
@@ -256,39 +279,5 @@ extension RefreshAllAppsIntent
             CellularRefreshManager.shared.isShortcutTwoStageMode = false
             throw error
         }
-    }
-}
-
-@available(iOS 17.0, tvOS 17.0, *)
-struct RefreshAll4GIntent: AppIntent, PredictableIntent, ProgressReportingIntent, ForegroundContinuableIntent
-{
-    static var title: LocalizedStringResource = "Refresh All 4g"
-    static var description = IntentDescription("Làm mới tất cả ứng dụng bằng 4G (Tự động phân biệt Giai đoạn 1 và Giai đoạn 2).")
-
-    static var parameterSummary: some ParameterSummary {
-        Summary("Refresh All 4g")
-    }
-
-    static var predictionConfiguration: some IntentPredictionConfiguration {
-        IntentPrediction {
-            DisplayRepresentation(
-                title: "Refresh All 4g",
-                subtitle: ""
-            )
-        }
-    }
-
-    init()
-    {
-        self.progress.completedUnitCount = 0
-        self.progress.totalUnitCount = 1
-    }
-
-    func perform() async throws -> some IntentResult & ProvidesDialog
-    {
-        // Gọi trực tiếp sang RefreshAllAppsIntent (Refresh All Wifi) để xử lý tự động 2 giai đoạn
-        let wifiIntent = RefreshAllAppsIntent(presentsNotifications: false)
-        self.progress.addChild(wifiIntent.progress, withPendingUnitCount: 1)
-        return try await wifiIntent.perform()
     }
 }
