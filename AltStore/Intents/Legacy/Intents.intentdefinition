@@ -32,7 +32,7 @@
 					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
 					<true/>
 					<key>INIntentParameterCombinationTitle</key>
-					<string>Refresh All Wifi</string>
+					<string>Refresh All Wifi/4G</string>
 					<key>INIntentParameterCombinationTitleID</key>
 					<string>cJxa2I</string>
 					<key>INIntentParameterCombinationUpdatesLinked</key>
