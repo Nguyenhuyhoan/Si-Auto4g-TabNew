@@ -1,4 +1,3 @@
-
 //
 //  AppShortcuts.swift
 //  AltStore
@@ -13,7 +12,7 @@ import AppIntents
 public struct ShortcutsProvider: AppShortcutsProvider
 {
     public static var appShortcuts: [AppShortcut] {
-        AppShortcut(intent: RefreshAllAppsIntent(),
+        AppShortcut(intent: RefreshAllAppsIntent(presentsNotifications: false, mode: .wifi),
                     phrases: [
                         "Refresh All Wifi with \(.applicationName)",
                         "Refresh \(.applicationName)",
@@ -24,7 +23,7 @@ public struct ShortcutsProvider: AppShortcutsProvider
                     shortTitle: "Refresh All Wifi",
                     systemImageName: "wifi")
 
-        AppShortcut(intent: RefreshAll4GIntent(),
+        AppShortcut(intent: RefreshAllAppsIntent(presentsNotifications: false, mode: .cellular4g),
                     phrases: [
                         "Refresh All 4g with \(.applicationName)"
                     ],
