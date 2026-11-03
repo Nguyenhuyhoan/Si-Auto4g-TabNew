@@ -32,7 +32,7 @@
 					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
 					<true/>
 					<key>INIntentParameterCombinationTitle</key>
-					<string>Refresh All Apps</string>
+					<string>Refresh All Wifi</string>
 					<key>INIntentParameterCombinationTitleID</key>
 					<string>cJxa2I</string>
 					<key>INIntentParameterCombinationUpdatesLinked</key>
@@ -48,7 +48,7 @@
 					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
 					<true/>
 					<key>INIntentParameterCombinationTitle</key>
-					<string>Refresh All Apps</string>
+					<string>Refresh All Wifi</string>
 					<key>INIntentParameterCombinationTitleID</key>
 					<string>DKTGdO</string>
 				</dict>
