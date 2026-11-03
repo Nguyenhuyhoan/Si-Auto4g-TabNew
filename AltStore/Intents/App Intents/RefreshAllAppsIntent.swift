@@ -8,6 +8,7 @@
 //
 
 import AppIntents
+@preconcurrency import UIKit
 
 @available(iOS 16, tvOS 16, *)
 class IntentError: NSError, CustomLocalizedStringResourceConvertible, @unchecked Sendable
@@ -226,6 +227,27 @@ private extension RefreshAllAppsIntent
     }
 }
 
+// MARK: - Cellular Refresh Two-Stage Shortcut Support
+
+@MainActor private var shortcutBridgeBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+
+@MainActor private func beginShortcutBridgeBackgroundTask() {
+    if shortcutBridgeBackgroundTaskID != .invalid {
+        UIApplication.shared.endBackgroundTask(shortcutBridgeBackgroundTaskID)
+    }
+    shortcutBridgeBackgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "com.sidestore.CellularShortcutBridge") {
+        UIApplication.shared.endBackgroundTask(shortcutBridgeBackgroundTaskID)
+        shortcutBridgeBackgroundTaskID = .invalid
+    }
+}
+
+@MainActor private func endShortcutBridgeBackgroundTask() {
+    if shortcutBridgeBackgroundTaskID != .invalid {
+        UIApplication.shared.endBackgroundTask(shortcutBridgeBackgroundTaskID)
+        shortcutBridgeBackgroundTaskID = .invalid
+    }
+}
+
 @available(iOS 17.0, tvOS 17.0, *)
 struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundContinuableIntent
 {
@@ -242,6 +264,9 @@ struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundCon
 
     func perform() async throws -> some IntentResult & ProvidesDialog
     {
+        // Giữ cho tiến trình LiveContainer/SideStore sống ngầm xuyên suốt từ Bước 1 sang Bước 2 khi màn hình tắt
+        await beginShortcutBridgeBackgroundTask()
+
         CellularRefreshManager.shared.isShortcutTwoStageMode = true
         CellularRefreshManager.shared.stagedBatches = []
 
@@ -265,7 +290,7 @@ struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundCon
                     }
                 } catch OperationError.timedOut {
                     let operation = await self.operationActor.operation
-                    operation?.presentsFinishedNotification = true
+                    operation?.presentsFinishedNotification = false
                     try await self.requestToContinueInForeground()
                 }
             }
@@ -273,6 +298,7 @@ struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundCon
             return .result(dialog: "Cellular Refresh 1 hoàn tất.")
         } catch {
             CellularRefreshManager.shared.isShortcutTwoStageMode = false
+            await endShortcutBridgeBackgroundTask()
             throw IntentError(error)
         }
     }
@@ -314,7 +340,7 @@ struct CellularRefresh1Intent: AppIntent, ProgressReportingIntent, ForegroundCon
 }
 
 @available(iOS 17.0, tvOS 17.0, *)
-struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent
+struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent, ForegroundContinuableIntent
 {
     static var title: LocalizedStringResource = "Cellular Refresh 2"
     static var description = IntentDescription("Giai đoạn 2: Tiêm Profile vào máy khi đã tắt 4G.")
@@ -327,31 +353,73 @@ struct CellularRefresh2Intent: AppIntent, ProgressReportingIntent
 
     func perform() async throws -> some IntentResult & ProvidesDialog
     {
+        // Tiếp tục gia hạn Background Task trong suốt quá trình tiêm Profile khi màn hình khóa
+        await beginShortcutBridgeBackgroundTask()
+
         defer {
             CellularRefreshManager.shared.isShortcutTwoStageMode = false
             CellularRefreshManager.shared.stagedBatches = []
+            Task { @MainActor in
+                endShortcutBridgeBackgroundTask()
+            }
         }
 
         do {
-            try await DatabaseManager.shared.start()
-            let batches = CellularRefreshManager.shared.stagedBatches
-            guard !batches.isEmpty else {
-                return .result(dialog: "Không có ứng dụng nào chờ làm mới.")
+            let deadline: ContinuousClock.Instant = .now + .seconds(27)
+            
+            try await withThrowingTaskGroup(of: Void.self) { taskGroup in
+                taskGroup.addTask {
+                    try await self.runStage2()
+                }
+                
+                taskGroup.addTask {
+                    try await Task.sleep(until: deadline)
+                    throw OperationError.timedOut
+                }
+                
+                do {
+                    for try await _ in taskGroup.prefix(1) {
+                        taskGroup.cancelAll()
+                        break
+                    }
+                } catch OperationError.timedOut {
+                    try await self.requestToContinueInForeground()
+                }
             }
-
-            _ = await CellularRefreshManager.shared.waitForMinimuxerReady(timeout: 3.0)
-
-            let dbContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-            let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: dbContext)
-            let injectOp = try InjectBatchProfilesOperation(batches: batches, context: injectContext)
-            try await injectOp.execute()
-
-            await WidgetDataManager.publishCurrentInstalledApps(in: dbContext)
-            self.progress.completedUnitCount = 1
 
             return .result(dialog: "Đã làm mới tất cả ứng dụng bằng 4G!")
         } catch {
             throw IntentError(error)
         }
+    }
+
+    private func runStage2() async throws {
+        try await DatabaseManager.shared.start()
+        let batches = CellularRefreshManager.shared.stagedBatches
+        guard !batches.isEmpty else {
+            return
+        }
+
+        // Chờ 1.5s để bảng định tuyến (Routing Table) của iOS ngắt hẳn 4G và chuyển hoàn toàn sang LocalDevVPN khi màn hình tắt
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+        // Khởi động lại EMProxy giống hệt luồng Wi-Fi Refresh trong BackgroundRefreshAppsOperation
+        if UserDefaults.standard.enableEMPforWireguard {
+            try? await startEMProxy()
+        }
+
+        // Đảm bảo Minimuxer đã sẵn sàng nhận kết nối qua VPN
+        let isReady = await CellularRefreshManager.shared.waitForMinimuxerReady(timeout: 8.0)
+        if !isReady {
+            try? await ensureMinimuxerReady()
+        }
+
+        let dbContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+        let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: dbContext)
+        let injectOp = try InjectBatchProfilesOperation(batches: batches, context: injectContext)
+        try await injectOp.execute()
+
+        await WidgetDataManager.publishCurrentInstalledApps(in: dbContext)
+        self.progress.completedUnitCount = 1
     }
 }
