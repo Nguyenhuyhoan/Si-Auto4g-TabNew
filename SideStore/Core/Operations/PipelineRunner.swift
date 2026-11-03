@@ -207,7 +207,7 @@ final class PipelineRunner: Sendable
             return false
         }
         
-        let isCellularRefreshGroup = ((operationsCount >= 2 || CellularRefreshManager.shared.isShortcutTwoStageMode) && CellularRefreshManager.shared.isCellularMode && allAreRefresh)
+        let isCellularRefreshGroup = (CellularRefreshManager.shared.isShortcutTwoStageMode || (operationsCount >= 2 && CellularRefreshManager.shared.isCellularMode)) && allAreRefresh
         group.isCellularRefreshGroup = isCellularRefreshGroup
         debugLog("[PipelineRunner] Configured fast pipeline for \(operationsCount) operation(s): isCellularRefreshGroup = \(isCellularRefreshGroup)")
 
