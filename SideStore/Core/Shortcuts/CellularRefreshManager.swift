@@ -11,6 +11,12 @@ import Foundation
 import UIKit
 import Minimuxer
 
+private struct PersistedProfileBatch: Codable {
+    let bundleID: String
+    let profiles: [Data]
+    let certStatus: String?
+}
+
 public final class CellularRefreshManager: @unchecked Sendable {
     public static let shared = CellularRefreshManager()
 
@@ -21,19 +27,52 @@ public final class CellularRefreshManager: @unchecked Sendable {
         set { lock.withLock { cachedDidTurnOffData = newValue } }
     }
 
-    // --- BỘ NHỚ TẠM CHO SHORTCUT 2 GIAI ĐOẠN ---
+    // --- BỘ NHỚ TẠM CHO SHORTCUT 2 GIAI ĐOẠN (RAM + DISK BACKUP KHI TẮT MÀN HÌNH) ---
     private var cachedShortcutMode = false
     public var isShortcutTwoStageMode: Bool {
         get { lock.withLock { cachedShortcutMode } }
         set { lock.withLock { cachedShortcutMode = newValue } }
     }
 
+    private var stagedBatchesFileURL: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("cellular_staged_batches.json")
+    }
+
     private var cachedStagedBatches: [PendingProfileBatch] = []
     internal var stagedBatches: [PendingProfileBatch] {
-        get { lock.withLock { cachedStagedBatches } }
-        set { lock.withLock { cachedStagedBatches = newValue } }
+        get {
+            lock.withLock {
+                if !cachedStagedBatches.isEmpty {
+                    return cachedStagedBatches
+                }
+                // Nếu app bị iOS đóng băng/khởi động lại giữa Bước 1 và Bước 2 khi tắt màn hình, khôi phục từ ổ cứng
+                guard let data = try? Data(contentsOf: stagedBatchesFileURL),
+                      let persisted = try? JSONDecoder().decode([PersistedProfileBatch].self, from: data) else {
+                    return []
+                }
+                cachedStagedBatches = persisted.map {
+                    PendingProfileBatch(bundleID: $0.bundleID, profiles: $0.profiles, app: nil, certStatus: $0.certStatus)
+                }
+                return cachedStagedBatches
+            }
+        }
+        set {
+            lock.withLock {
+                cachedStagedBatches = newValue
+                if newValue.isEmpty {
+                    try? FileManager.default.removeItem(at: stagedBatchesFileURL)
+                } else {
+                    let persisted = newValue.map {
+                        PersistedProfileBatch(bundleID: $0.bundleID, profiles: $0.profiles, certStatus: $0.certStatus)
+                    }
+                    if let data = try? JSONEncoder().encode(persisted) {
+                        try? data.write(to: stagedBatchesFileURL, options: .atomic)
+                    }
+                }
+            }
+        }
     }
-    // ------------------------------------------
+    // -------------------------------------------------------------------------------
 
     private init() {}
 
@@ -175,13 +214,18 @@ public final class CellularRefreshManager: @unchecked Sendable {
     public func waitForMinimuxerReady(timeout: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         debugLog("[CellularRefreshManager] Waiting for minimuxer endpoint to become ready (timeout: \(timeout)s)...")
+        
+        // Khởi động Minimuxer nếu app chưa được mở trước đó (chạy hoàn toàn dưới nền khi tắt màn hình)
+        try? await ensureMinimuxerReady()
+        
         while Date() < deadline {
             await minimuxer.network.refreshEndpoint()
             if case .success(true) = await minimuxer.core.isReady(withNetworkCheck: false) {
                 debugLog("[CellularRefreshManager] Minimuxer is ready.")
                 return true
             }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await ensureMinimuxerReady()
+            try? await Task.sleep(nanoseconds: 250_000_000)
         }
         debugLog("[CellularRefreshManager] Timed out waiting for minimuxer to become ready.")
         return false
