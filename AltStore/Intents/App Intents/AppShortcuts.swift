@@ -14,13 +14,13 @@ public struct ShortcutsProvider: AppShortcutsProvider
     public static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: RefreshAllAppsIntent(presentsNotifications: false, mode: .wifi),
                     phrases: [
-                        "Refresh All Wifi with \(.applicationName)",
+                        "Refresh All Wifi/4G with \(.applicationName)",
                         "Refresh \(.applicationName)",
                         "Refresh \(.applicationName) apps",
                         "Refresh my \(.applicationName) apps",
                         "Refresh apps with \(.applicationName)",
                     ],
-                    shortTitle: "Refresh All Wifi",
+                    shortTitle: "Refresh All Wifi/4G",
                     systemImageName: "wifi")
 
         AppShortcut(intent: RefreshAllAppsIntent(presentsNotifications: false, mode: .cellular4g),
