@@ -1,5 +1,3 @@
-
-
 //
 //  RefreshAllAppsIntent.swift
 //  AltStore
@@ -82,25 +80,6 @@ struct InstallIPAIntent: AppIntent, ProgressReportingIntent
     }
 }
 
-
-@available(iOS 17.0, tvOS 17.0, *)
-public enum RefreshModeAppEnum: String, AppEnum, Sendable
-{
-    case wifi = "wifi"
-    case cellular4g = "4g"
-
-    public static var typeDisplayRepresentation: TypeDisplayRepresentation {
-        TypeDisplayRepresentation(name: "Chế độ Refresh")
-    }
-
-    public static var caseDisplayRepresentations: [RefreshModeAppEnum: DisplayRepresentation] {
-        [
-            .wifi: DisplayRepresentation(title: "Refresh All Wifi/4G"),
-            .cellular4g: DisplayRepresentation(title: "Refresh All 4g")
-        ]
-    }
-}
-
 @available(iOS 17.0, tvOS 17.0, *)
 extension RefreshAllAppsIntent
 {
@@ -120,20 +99,18 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
 {
     static let intentClassName = "RefreshAllIntent"
     
-    static var title: LocalizedStringResource = "Refresh All Wifi/4G"
+    // Đổi tên hiển thị duy nhất
+    static var title: LocalizedStringResource = "Refresh All Apps (Wifi/4G)"
     static var description = IntentDescription("Refreshes your sideloaded apps to prevent them from expiring.")
     
-    @Parameter(title: "Mode", default: .wifi)
-    var mode: RefreshModeAppEnum
-    
     static var parameterSummary: some ParameterSummary {
-        Summary("\(\.$mode)")
+        Summary("Refresh All Apps (Wifi/4G)")
     }
     
     static var predictionConfiguration: some IntentPredictionConfiguration {
-        IntentPrediction(parameters: (\.$mode)) { mode in
+        IntentPrediction {
             DisplayRepresentation(
-                title: mode == .cellular4g ? "Refresh All 4g" : "Refresh All Wifi/4G",
+                title: "Refresh All Apps (Wifi/4G)",
                 subtitle: ""
             )
         }
@@ -143,10 +120,9 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     
     private let operationActor = OperationActor()
     
-    init(presentsNotifications: Bool, mode: RefreshModeAppEnum = .wifi)
+    init(presentsNotifications: Bool)
     {
         self.presentsNotifications = presentsNotifications
-        self.mode = mode
         
         self.progress.completedUnitCount = 0
         self.progress.totalUnitCount = 1
@@ -154,10 +130,11 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     
     init()
     {
-        self.init(presentsNotifications: false, mode: .wifi)
+        self.init(presentsNotifications: false)
     }
     
-    func perform() async throws -> some IntentResult & ProvidesDialog
+    // Đã bỏ "& ProvidesDialog" để không ép trả về thông báo văn bản
+    func perform() async throws -> some IntentResult
     {
         do
         {
@@ -184,16 +161,19 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
                 catch OperationError.timedOut
                 {
                     let operation = await self.operationActor.operation
-                    operation?.presentsFinishedNotification = true
+                    // Đổi thành false để ngay cả khi chạy quá 27s vẫn không bắn thông báo lúc thành công
+                    operation?.presentsFinishedNotification = false
                     
                     try await self.requestToContinueInForeground()
                 }
             }
             
-            return .result(dialog: "All apps have been refreshed.")
+            // Trả về kết quả rỗng (Im lặng tuyệt đối khi thành công)
+            return .result()
         }
         catch
         {
+            // Khi có lỗi (cả Wifi lẫn 4G), quăng lỗi ra để Shortcuts hiện thông báo
             let intentError = IntentError(error)
             throw intentError
         }
@@ -225,8 +205,8 @@ private extension RefreshAllAppsIntent
             }
         }
 
-        // 2. NẾU CHỌN "Refresh All 4g" HOẶC KHÔNG CÓ WI-FI -> TỰ ĐỘNG BẬT CHẾ ĐỘ LƯU TẠM 2 GIAI ĐOẠN!
-        let isFourGMode = (self.mode == .cellular4g) || !minimuxer.network.isWifiSatisfied
+        // 2. TỰ ĐỘNG KIỂM TRA: NẾU KHÔNG CÓ WI-FI -> TỰ ĐỘNG BẬT CHẾ ĐỘ 4G (LƯU TẠM 2 GIAI ĐOẠN)
+        let isFourGMode = !minimuxer.network.isWifiSatisfied
         if isFourGMode {
             CellularRefreshManager.shared.isShortcutTwoStageMode = true
             CellularRefreshManager.shared.stagedBatches = []
@@ -237,7 +217,8 @@ private extension RefreshAllAppsIntent
         
         do {
             try await withCheckedThrowingContinuation { continuation in
-                let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: !isFourGMode ? self.presentsNotifications : false) { (result) in
+                // Luôn đặt presentsNotifications: false để tắt thông báo đẩy của hệ thống khi chạy bằng phím tắt
+                let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: false) { (result) in
                     do
                     {
                         let results = try result.get()
