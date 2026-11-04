@@ -1,3 +1,4 @@
+
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -32,7 +33,7 @@
 					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
 					<true/>
 					<key>INIntentParameterCombinationTitle</key>
-					<string>Refresh All Wifi/4G</string>
+					<string>Refresh All Apps (Wifi/4G)</string>
 					<key>INIntentParameterCombinationTitleID</key>
 					<string>cJxa2I</string>
 					<key>INIntentParameterCombinationUpdatesLinked</key>
@@ -48,7 +49,7 @@
 					<key>INIntentParameterCombinationSupportsBackgroundExecution</key>
 					<true/>
 					<key>INIntentParameterCombinationTitle</key>
-					<string>Refresh All Wifi/4G</string>
+					<string>Refresh All Apps (Wifi/4G)</string>
 					<key>INIntentParameterCombinationTitleID</key>
 					<string>DKTGdO</string>
 				</dict>
@@ -59,11 +60,11 @@
 				<array>
 					<dict>
 						<key>INIntentResponseCodeConciseFormatString</key>
-						<string>All apps have been refreshed.</string>
+						<string></string>
 						<key>INIntentResponseCodeConciseFormatStringID</key>
 						<string>3WMWsJ</string>
 						<key>INIntentResponseCodeFormatString</key>
-						<string>All apps have been refreshed.</string>
+						<string></string>
 						<key>INIntentResponseCodeFormatStringID</key>
 						<string>BjInD3</string>
 						<key>INIntentResponseCodeName</key>
@@ -105,7 +106,7 @@
 				</array>
 			</dict>
 			<key>INIntentTitle</key>
-			<string>Refresh All Wifi/4G</string>
+			<string>Refresh All Apps (Wifi/4G)</string>
 			<key>INIntentTitleID</key>
 			<string>2b6Xto</string>
 			<key>INIntentType</key>
