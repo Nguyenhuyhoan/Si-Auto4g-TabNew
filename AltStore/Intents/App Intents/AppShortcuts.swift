@@ -1,3 +1,5 @@
+
+
 //
 //  AppShortcuts.swift
 //  AltStore
@@ -12,23 +14,16 @@ import AppIntents
 public struct ShortcutsProvider: AppShortcutsProvider
 {
     public static var appShortcuts: [AppShortcut] {
-        AppShortcut(intent: RefreshAllAppsIntent(presentsNotifications: false, mode: .wifi),
+        AppShortcut(intent: RefreshAllAppsIntent(presentsNotifications: false),
                     phrases: [
-                        "Refresh All Wifi/4G with \(.applicationName)",
+                        "Refresh All Apps (Wifi/4G) with \(.applicationName)",
                         "Refresh \(.applicationName)",
                         "Refresh \(.applicationName) apps",
                         "Refresh my \(.applicationName) apps",
                         "Refresh apps with \(.applicationName)",
                     ],
-                    shortTitle: "Refresh All Wifi/4G",
+                    shortTitle: "Refresh All Apps (Wifi/4G)",
                     systemImageName: "wifi")
-
-        AppShortcut(intent: RefreshAllAppsIntent(presentsNotifications: false, mode: .cellular4g),
-                    phrases: [
-                        "Refresh All wifi 4g/with \(.applicationName)"
-                    ],
-                    shortTitle: "Refresh All wifi/4g",
-                    systemImageName: "antenna.radiowaves.left.and.right")
 
         AppShortcut(intent: InstallIPAIntent(),
                     phrases: [
@@ -43,3 +38,4 @@ public struct ShortcutsProvider: AppShortcutsProvider
         return .teal
     }
 }
+
