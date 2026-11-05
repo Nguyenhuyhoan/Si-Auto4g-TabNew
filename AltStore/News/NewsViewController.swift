@@ -133,8 +133,14 @@ final class SystemCheckViewModel: ObservableObject {
     
     /// Cập nhật ngay lập tức trạng thái 4G và IP không cần đợi ping
     private func updateFastNetworkUI() {
-        let interfaces = minimuxer.network.activeInterfaces
-        let hasPdp = interfaces.contains { $0.name.lowercased().hasPrefix("pdp_ip") && !$0.address.isEmpty }
+        let interfaces: [LocalInterfaceInfo] = minimuxer.network.activeInterfaces
+        var hasPdp = false
+        for iface in interfaces {
+            if iface.name.lowercased().hasPrefix("pdp_ip") && !iface.address.isEmpty {
+                hasPdp = true
+                break
+            }
+        }
         
         self.isCellularOK = usesCellularPath || hasPdp
         if usesCellularPath {
@@ -345,7 +351,7 @@ struct CheckItemButton: View {
     let action: () -> Void
     
     var body: some View {
-        Button(action: action) {
+        SwiftUI.Button(action: action) {
             HStack(spacing: 14) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 12)
@@ -381,7 +387,7 @@ struct CheckItemButton: View {
             .background(Color(UIColor.secondarySystemGroupedBackground))
             .cornerRadius(16)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainButtonStyle())
     }
 }
 
@@ -393,11 +399,11 @@ struct ShortcutLinkRow: View {
     let urlString: String
     
     var body: some View {
-        Button {
+        SwiftUI.Button(action: {
             if let url = URL(string: urlString) {
                 UIApplication.shared.open(url)
             }
-        } label: {
+        }) {
             HStack(spacing: 14) {
                 ZStack {
                     Circle()
@@ -431,7 +437,7 @@ struct ShortcutLinkRow: View {
             .background(Color(UIColor.secondarySystemGroupedBackground))
             .cornerRadius(14)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainButtonStyle())
     }
 }
 
@@ -550,11 +556,7 @@ struct PairingGuideSheetView: View {
             .background(Color(UIColor.systemGroupedBackground))
             .navigationTitle("Hướng Dẫn Pairing File")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Xong") { dismiss() }
-                }
-            }
+            .navigationBarItems(trailing: SwiftUI.Button("Xong") { dismiss() })
         }
     }
 }
@@ -653,11 +655,7 @@ struct VpnDetailSheetView: View {
             .background(Color(UIColor.systemGroupedBackground))
             .navigationTitle("Cấu Hình LocalDevVPN")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Xong") { dismiss() }
-                }
-            }
+            .navigationBarItems(trailing: SwiftUI.Button("Xong") { dismiss() })
         }
     }
 }
@@ -678,13 +676,13 @@ struct CopyableIPCard: View {
                     .foregroundColor(.primary)
             }
             Spacer()
-            Button {
+            SwiftUI.Button(action: {
                 UIPasteboard.general.string = value
                 copied = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     copied = false
                 }
-            } label: {
+            }) {
                 Label(copied ? "Đã chép" : "Sao chép", systemImage: copied ? "checkmark" : "doc.on.doc")
                     .font(.caption.bold())
                     .padding(.horizontal, 12)
@@ -693,6 +691,7 @@ struct CopyableIPCard: View {
                     .foregroundColor(copied ? .green : .accentColor)
                     .cornerRadius(10)
             }
+            .buttonStyle(PlainButtonStyle())
         }
         .padding(12)
         .background(Color(UIColor.tertiarySystemGroupedBackground))
@@ -746,11 +745,7 @@ struct CellularDetailSheetView: View {
             .background(Color(UIColor.systemGroupedBackground))
             .navigationTitle("Mạng 4G / Di Động")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Xong") { dismiss() }
-                }
-            }
+            .navigationBarItems(trailing: SwiftUI.Button("Xong") { dismiss() })
         }
     }
 }
