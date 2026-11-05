@@ -1,4 +1,4 @@
-//
+//  AltStore/TabBarController.swift
 //  TabBarController.swift
 //  AltStore
 //
@@ -41,6 +41,14 @@ final class TabBarController: UITabBarController
     {
         super.viewDidLoad()
         debugLog("[TabBarController] viewDidLoad()")
+        
+        // Đổi tab News thành Check kèm icon dấu tích
+        if let checkNavigationController = self.viewControllers?[Tab.news.rawValue] as? UINavigationController
+        {
+            checkNavigationController.tabBarItem.title = "Check"
+            checkNavigationController.tabBarItem.image = UIImage(systemName: "checkmark.shield")
+            checkNavigationController.tabBarItem.selectedImage = UIImage(systemName: "checkmark.shield.fill")
+        }
         
         let browseNavigationController = self.viewControllers![Tab.browse.rawValue] as! UINavigationController
         browseNavigationController.tabBarItem.image = UIImage(systemName: "bag")
