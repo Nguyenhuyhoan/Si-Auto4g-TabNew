@@ -10,7 +10,6 @@ import SwiftUI
 import Network
 @preconcurrency import Minimuxer
 import Combine
-import AltStoreCore
 import Darwin
 
 class NewsViewController: UICollectionViewController {
