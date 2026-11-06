@@ -165,9 +165,6 @@ final class SystemCheckViewModel: ObservableObject {
             }
             if lower.hasPrefix("utun") {
                 hasUtun = true
-                if bestUtunIP == nil || iface.address.hasPrefix("10.7.") {
-                    bestUtunIP = iface.address
-                }
             }
         }
         
@@ -271,9 +268,9 @@ final class SystemCheckViewModel: ObservableObject {
             self.deviceIP = "Chưa kết nối"
         }
         
-        let vpnReady = config.isTunnelReady
-            || minimuxer.network.isUTunAvailable
+        let vpnReady = minimuxer.network.isUTunAvailable
             || (snapshot.hasActiveUtun && rawTunnelIP != nil)
+            || (config.formattedTunnelIface != nil && config.formattedTunnelPeer != nil)
         self.isVpnOK = vpnReady
         
         // 3. Trạng thái Pairing File hiện có
@@ -306,12 +303,10 @@ final class SystemCheckViewModel: ObservableObject {
             self.pairingProtocol = (hasAnyFile || coreLoaded) ? "Đã nạp Pairing File" : "Chưa có Pairing File"
         }
         
-        // Nếu Minimuxer đang Ready hoặc đã nạp file Pairing hợp lệ hoặc đã verify trước đó -> báo Xanh ngay!
-        let muxerReady = (minimuxerStatus == .ready)
         if !hasAnyFile && !coreLoaded {
             self.lastVerifiedPairingSuccess = false
             self.isPairingOK = false
-        } else if muxerReady || coreLoaded || self.lastVerifiedPairingSuccess || hasAnyFile {
+        } else if coreLoaded || self.lastVerifiedPairingSuccess || hasAnyFile {
             self.isPairingOK = true
         }
     }
@@ -324,9 +319,11 @@ final class SystemCheckViewModel: ObservableObject {
         isChecking = true
         defer { isChecking = false }
         
-        // Nếu có file Pairing trong bộ nhớ mà Minimuxer chưa nạp vào core -> khởi động nhẹ nhàng
+        // Nếu có file Pairing trong bộ nhớ mà Minimuxer chưa nạp vào core -> nạp nhẹ nhàng
         if hasAnyStoredPairingFile && !minimuxer.core.isPairingFileLoaded {
-            await ensureMinimuxerStarted()
+            let proto: PairingProtocol = PairingFileManager.shared.persistedActiveProtocol
+                ?? (PairingFileManager.shared.hasPairingFile(for: .rppairing) ? .rppairing : .lockdown)
+            try? await minimuxerSwitchPairingProtocol(to: proto)
             updateInstantStatus()
         }
         
@@ -338,7 +335,6 @@ final class SystemCheckViewModel: ObservableObject {
                     self.lastVerifiedPairingSuccess = true
                     self.isPairingOK = true
                 } else if minimuxer.core.isPairingFileLoaded || hasAnyStoredPairingFile {
-                    // Ngay cả khi muxer đang bận cài app, miễn là file Pairing đã nạp hợp lệ thì vẫn giữ trạng thái Ổn định
                     self.isPairingOK = true
                 }
             }
