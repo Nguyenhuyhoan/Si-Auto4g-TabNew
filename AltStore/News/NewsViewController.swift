@@ -65,6 +65,11 @@ final class SystemCheckViewModel: ObservableObject {
     @Published var cellularDetail: String = "Đang kiểm tra..."
     @Published var hasInternet: Bool = false
     
+    // Trạng thái Máy chủ Anisette (Tắt Use On-Device Anisette = Ổn định / Tích xanh)
+    @Published var isAnisetteOK: Bool = !UserDefaults.standard.useOnDeviceAnisette
+    @Published var useOnDeviceAnisette: Bool = UserDefaults.standard.useOnDeviceAnisette
+    @Published var anisetteDetail: String = "Đang kiểm tra..."
+    
     private let pathMonitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "com.sidestore.check.network")
     private var usesCellularPath: Bool = false
@@ -124,7 +129,15 @@ final class SystemCheckViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // 4. Khi quay lại app từ Cài đặt hoặc LocalDevVPN -> Kiểm tra ngay lập tức
+        // 4. Lắng nghe thay đổi cài đặt UserDefaults (Use On-Device Anisette & Máy chủ Anisette)
+        NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateInstantStatus()
+            }
+            .store(in: &cancellables)
+        
+        // 5. Khi quay lại app từ Cài đặt hoặc LocalDevVPN -> Kiểm tra ngay lập tức
         NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -136,7 +149,7 @@ final class SystemCheckViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // 5. Vòng lặp cập nhật nhẹ nhàng mỗi 2 giây
+        // 6. Vòng lặp cập nhật nhẹ nhàng mỗi 2 giây
         timerTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self = self else { break }
@@ -219,6 +232,12 @@ final class SystemCheckViewModel: ObservableObject {
             hasActiveUtun: hasUtun,
             detectedUtunIPv4: bestUtunIP
         )
+    }
+    
+    // MARK: - Bật/Tắt nhanh Use On-Device Anisette đồng bộ trực tiếp với Cài đặt
+    func setUseOnDeviceAnisette(_ enabled: Bool) {
+        UserDefaults.standard.useOnDeviceAnisette = enabled
+        updateInstantStatus()
     }
     
     // MARK: - Cập nhật nhanh trạng thái UI không cần chờ đợi
@@ -309,6 +328,19 @@ final class SystemCheckViewModel: ObservableObject {
         } else if coreLoaded || self.lastVerifiedPairingSuccess || hasAnyFile {
             self.isPairingOK = true
         }
+        
+        // 4. Trạng thái Máy chủ Anisette (Tắt Use On-Device Anisette = Ổn định / Tích xanh)
+        let onDevice = UserDefaults.standard.useOnDeviceAnisette
+        self.useOnDeviceAnisette = onDevice
+        self.isAnisetteOK = !onDevice
+        
+        let selectedURL = UserDefaults.standard.selectedAnisetteURL
+        let serverHost = URL(string: selectedURL)?.host ?? selectedURL
+        if onDevice {
+            self.anisetteDetail = "Chưa ổn định • Hãy tắt Use On-Device Anisette"
+        } else {
+            self.anisetteDetail = "Ổn định • Đang dùng máy chủ (\(serverHost))"
+        }
     }
     
     // MARK: - Kiểm tra chuyên sâu ở Background (An toàn, không làm nghẽn Cài/Refresh App)
@@ -350,6 +382,7 @@ struct SystemCheckDashboardView: SwiftUI.View {
     @State private var showPairingSheet = false
     @State private var showVpnSheet = false
     @State private var showCellularSheet = false
+    @State private var showAnisetteSheet = false
     
     var body: some SwiftUI.View {
         ScrollView {
@@ -388,6 +421,15 @@ struct SystemCheckDashboardView: SwiftUI.View {
                     ) {
                         showCellularSheet = true
                     }
+                    
+                    CheckItemButton(
+                        title: "Máy chủ Anisette",
+                        subtitle: vm.anisetteDetail,
+                        icon: "server.rack",
+                        isStable: vm.isAnisetteOK
+                    ) {
+                        showAnisetteSheet = true
+                    }
                 }
                 
                 shortcutsSection
@@ -414,10 +456,13 @@ struct SystemCheckDashboardView: SwiftUI.View {
         .sheet(isPresented: $showCellularSheet) {
             CellularDetailSheetView(isCellularOK: vm.isCellularOK, detail: vm.cellularDetail, hasInternet: vm.hasInternet)
         }
+        .sheet(isPresented: $showAnisetteSheet) {
+            AnisetteDetailSheetView(vm: vm)
+        }
     }
     
     private var headerBanner: some SwiftUI.View {
-        let allReady = vm.isPairingOK && vm.isVpnOK && vm.isCellularOK
+        let allReady = vm.isPairingOK && vm.isVpnOK && vm.isCellularOK && vm.isAnisetteOK
         return HStack(spacing: 14) {
             SwiftUI.Image(systemName: allReady ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                 .font(.system(size: 36))
@@ -1145,6 +1190,187 @@ struct CellularDetailSheetView: SwiftUI.View {
             .navigationTitle("Mạng 4G / Di Động")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(trailing: SwiftUI.Button("Xong") { dismiss() })
+        }
+    }
+}
+
+// MARK: - 4. Trang Chi Tiết & Cấu Hình Nhanh Máy Chủ Anisette
+struct AnisetteDetailSheetView: SwiftUI.View {
+    @ObservedObject var vm: SystemCheckViewModel
+    @ObservedObject private var serversManager = AnisetteServersManager.shared
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some SwiftUI.View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // 1. Trạng thái hiện tại
+                    HStack(spacing: 12) {
+                        SwiftUI.Image(systemName: vm.isAnisetteOK ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .font(.title)
+                            .foregroundColor(vm.isAnisetteOK ? .green : .red)
+                        VStack(alignment: .leading, spacing: 2) {
+                            SwiftUI.Text(vm.isAnisetteOK ? "Cấu Hình Anisette Đang Ổn Định" : "Đang Bật Use On-Device Anisette")
+                                .font(.headline)
+                            SwiftUI.Text(vm.anisetteDetail)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding()
+                    .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
+                    .cornerRadius(14)
+                    
+                    // 2. Công tắc Bật / Tắt trực tiếp (Đồng bộ 2 chiều với Cài đặt)
+                    VStack(alignment: .leading, spacing: 14) {
+                        SwiftUI.Label("Thiết lập Use On-Device Anisette", systemImage: "switch.2")
+                            .font(.headline)
+                            .foregroundColor(.blue)
+                        
+                        Toggle(isOn: Binding(
+                            get: { vm.useOnDeviceAnisette },
+                            set: { newValue in
+                                vm.setUseOnDeviceAnisette(newValue)
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                SwiftUI.Text("Use On-Device Anisette")
+                                    .font(.subheadline.bold())
+                                SwiftUI.Text(vm.useOnDeviceAnisette ? "Đang BẬT (Khuyên tắt để dùng Máy chủ Anisette ổn định hơn)" : "Đang TẮT (Chuẩn khuyên dùng ✅)")
+                                    .font(.caption)
+                                    .foregroundColor(vm.useOnDeviceAnisette ? .red : .green)
+                            }
+                        }
+                        .padding(12)
+                        .background(SwiftUI.Color(UIColor.tertiarySystemGroupedBackground))
+                        .cornerRadius(12)
+                        
+                        if vm.useOnDeviceAnisette {
+                            SwiftUI.Button {
+                                vm.setUseOnDeviceAnisette(false)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    SwiftUI.Image(systemName: "checkmark.shield.fill")
+                                    SwiftUI.Text("Tắt ngay Use On-Device Anisette (Khuyên dùng)")
+                                        .font(.subheadline.bold())
+                                }
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                                .background(SwiftUI.Color.green)
+                                .cornerRadius(12)
+                            }
+                        }
+                        
+                        SwiftUI.Text("• **Khuyên dùng:** Bạn nên **TẮT** mục **Use On-Device Anisette** để SideStore lấy dữ liệu xác thực thông qua **Máy chủ Anisette**, giúp đăng nhập Apple ID, cài IPA và làm mới ứng dụng qua 4G + VPN ổn định hơn.\n• Công tắc này được đồng bộ trực tiếp với mục **Use On-Device Anisette** trong tab Cài đặt (Settings).")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                    .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
+                    .cornerRadius(16)
+                    
+                    // 3. Danh sách chọn nhanh Máy chủ Anisette
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            SwiftUI.Label("Danh sách Máy chủ Anisette", systemImage: "server.rack")
+                                .font(.headline)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            if serversManager.isLoadingPublicServers {
+                                ProgressView()
+                            } else {
+                                SwiftUI.Button {
+                                    Task {
+                                        await serversManager.refreshPublicServers(force: true)
+                                    }
+                                } label: {
+                                    SwiftUI.Label("Làm mới", systemImage: "arrow.clockwise")
+                                        .font(.caption.bold())
+                                }
+                            }
+                        }
+                        
+                        SwiftUI.Text("Chạm vào một máy chủ bên dưới để chọn làm Máy chủ Anisette đang hoạt động:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        VStack(spacing: 8) {
+                            ForEach(serversManager.allServers) { server in
+                                let isSelected = (serversManager.selectedServerURL == server.url)
+                                SwiftUI.Button {
+                                    serversManager.selectServer(server)
+                                    // Nếu đang bật On-Device Anisette thì tự động tắt khi người dùng chọn máy chủ
+                                    if vm.useOnDeviceAnisette {
+                                        vm.setUseOnDeviceAnisette(false)
+                                    } else {
+                                        vm.updateInstantStatus()
+                                    }
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        SwiftUI.Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                            .font(.system(size: 20))
+                                            .foregroundColor(isSelected ? .green : .secondary)
+                                        
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            SwiftUI.Text(server.name)
+                                                .font(.subheadline.bold())
+                                                .foregroundColor(.primary)
+                                            SwiftUI.Text(server.url)
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer()
+                                        if isSelected {
+                                            SwiftUI.Text("Đang chọn")
+                                                .font(.caption2.bold())
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(SwiftUI.Color.green.opacity(0.15))
+                                                .foregroundColor(.green)
+                                                .clipShape(Capsule())
+                                        }
+                                    }
+                                    .padding(12)
+                                    .background(SwiftUI.Color(UIColor.tertiarySystemGroupedBackground))
+                                    .cornerRadius(12)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                        
+                        NavigationLink(destination: AnisetteServersView()) {
+                            HStack {
+                                SwiftUI.Image(systemName: "slider.horizontal.3")
+                                SwiftUI.Text("Quản lý / Thêm máy chủ Anisette tùy chỉnh...")
+                                    .font(.subheadline.bold())
+                                Spacer()
+                                SwiftUI.Image(systemName: "chevron.right")
+                                    .font(.caption.bold())
+                            }
+                            .padding(12)
+                            .background(SwiftUI.Color.accentColor.opacity(0.12))
+                            .foregroundColor(.accentColor)
+                            .cornerRadius(12)
+                        }
+                        .padding(.top, 4)
+                    }
+                    .padding()
+                    .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
+                    .cornerRadius(16)
+                }
+                .padding()
+            }
+            .background(SwiftUI.Color(UIColor.systemGroupedBackground))
+            .navigationTitle("Máy Chủ Anisette")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarItems(trailing: SwiftUI.Button("Xong") { dismiss() })
+            .task {
+                await serversManager.refreshPublicServers()
+                vm.updateInstantStatus()
+            }
         }
     }
 }
