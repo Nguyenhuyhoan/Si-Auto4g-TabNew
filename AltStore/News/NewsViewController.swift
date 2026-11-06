@@ -534,7 +534,6 @@ struct SystemCheckDashboardView: SwiftUI.View {
             
             ShortcutLinkRow(
                 title: "Phím tắt Tắt 4G",
-                subtitle: "Tắt nhanh dữ liệu di động",
                 icon: "antenna.radiowaves.left.and.right.slash",
                 color: .red,
                 urlString: "https://www.icloud.com/shortcuts/ee47f3710b02435883faa746c7355236"
@@ -542,7 +541,6 @@ struct SystemCheckDashboardView: SwiftUI.View {
             
             ShortcutLinkRow(
                 title: "Phím tắt Bật 4G",
-                subtitle: "Bật nhanh dữ liệu di động",
                 icon: "antenna.radiowaves.left.and.right",
                 color: .blue,
                 urlString: "https://www.icloud.com/shortcuts/10bd8bb0aa1540c4b1221182b835fc43"
@@ -550,7 +548,6 @@ struct SystemCheckDashboardView: SwiftUI.View {
             
             ShortcutLinkRow(
                 title: "Tự động làm mới App (6:00 sáng)",
-                subtitle: "Làm mới tự động qua 4G + VPN mỗi sáng",
                 icon: "clock.arrow.2.circlepath",
                 color: .green,
                 urlString: "https://www.icloud.com/shortcuts/56b0ab8cb0984d0b9a98543ac879eeec"
@@ -558,7 +555,6 @@ struct SystemCheckDashboardView: SwiftUI.View {
             
             ShortcutLinkRow(
                 title: "Tự động làm mới App (15:00 chiều)",
-                subtitle: "Làm mới tự động qua 4G + VPN mỗi chiều",
                 icon: "sun.max.circle.fill",
                 color: .orange,
                 urlString: "https://www.icloud.com/shortcuts/9f93051e8bf142258ffc93e08f3c0849"
@@ -575,18 +571,14 @@ struct SystemCheckDashboardView: SwiftUI.View {
             )
             
             VStack(alignment: .leading, spacing: 14) {
-                SwiftUI.Text("Thiết lập tự động gia hạn ứng dụng hằng ngày (6:00 hoặc 15:00) theo 2 bước dưới đây:")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-                
                 VStack(spacing: 14) {
                     RemoteGuideImageView(
                         urlString: "https://raw.githubusercontent.com/Nguyenhuyhoan/icons/main/IMG_2589.jpeg",
-                        caption: "Bước 1: Mở mục Tự động hoá và chọn chạy ngay lập tức"
+                        caption: "Bước 1: Mở Phím Tắt mục Auto Refresh 4G (Auto Refresh 4G 2) và nhấn vào dấu xổ xuống như trong ảnh."
                     )
                     RemoteGuideImageView(
                         urlString: "https://raw.githubusercontent.com/Nguyenhuyhoan/icons/main/IMG_2588.jpeg",
-                        caption: "Bước 2: Chọn giờ cố định lặp lại Hằng ngày"
+                        caption: "Bước 2: Bật nút Tự động hóa như trong ảnh."
                     )
                 }
             }
@@ -690,7 +682,7 @@ struct CheckItemButton: SwiftUI.View {
 
 struct ShortcutLinkRow: SwiftUI.View {
     let title: String
-    let subtitle: String
+    var subtitle: String? = nil
     let icon: String
     let color: SwiftUI.Color
     let urlString: String
@@ -715,10 +707,12 @@ struct ShortcutLinkRow: SwiftUI.View {
                     SwiftUI.Text(title)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(.primary)
-                    SwiftUI.Text(subtitle)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
+                    if let subtitle = subtitle, !subtitle.isEmpty {
+                        SwiftUI.Text(subtitle)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 
                 Spacer()
@@ -752,6 +746,7 @@ struct RemoteGuideImageView: SwiftUI.View {
             SwiftUI.Text(caption)
                 .font(.caption.bold())
                 .foregroundColor(.primary)
+                .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity, alignment: .center)
             
             if let url = URL(string: urlString) {
@@ -841,7 +836,7 @@ struct PairingGuideSheetView: SwiftUI.View {
                 .padding(16)
             }
             .background(SwiftUI.Color(UIColor.systemGroupedBackground))
-            .navigationTitle("Hướng Dẫn Cài Pairing")
+            .navigationTitle("HD Cài Pairing")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -950,18 +945,6 @@ struct PairingGuideSheetView: SwiftUI.View {
                 }
             }
             
-            HStack(alignment: .top, spacing: 8) {
-                SwiftUI.Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundColor(.orange)
-                    .font(.subheadline)
-                SwiftUI.Text("**Điều kiện bắt buộc trước khi làm:**\n• Đã bật **Chế độ nhà phát triển (Developer Mode)**.\n• Đã bật **LocalDevVPN** (Cấu hình khuyên dùng: Tunnel IP `10.7.1.1/32` • Device IP `10.7.0.1/32`).\n• Đang có kết nối mạng **Wi-Fi** hoặc **4G/5G**.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            .padding(10)
-            .background(SwiftUI.Color.orange.opacity(0.1))
-            .cornerRadius(10)
-            
             VStack(alignment: .leading, spacing: 12) {
                 GuideStepRow(
                     num: "1",
@@ -978,7 +961,7 @@ struct PairingGuideSheetView: SwiftUI.View {
                 GuideStepRow(
                     num: "3",
                     title: "Nhập mã PIN 6 chữ số",
-                    text: "Trong mục Chế độ nhà phát triển, nhấn vào dòng **Pair with SideStore** (hoặc tên thiết bị hiện ra). Một bảng mã **6 chữ số** sẽ xuất hiện trên màn hình ➔ hãy nhập chính xác 6 chữ số đó rồi nhấn **Pair (Ghép đôi)**."
+                    text: "Trong mục Chế độ nhà phát triển, nếu có “Thiết bị đã ghép đôi” nào trước đó thì xoá đi, sau đó nhấn vào dòng **Pair with SideStore**, nhập mật khẩu iphone của bạn. Sang app **LiveContainer+ SideStore** lấy mã 6 chữ số rồi về lại app **Cài Đặt** dán vào, nhấn **Ghép đôi**."
                 )
                 
                 GuideStepRow(
@@ -1107,7 +1090,7 @@ struct PairingGuideSheetView: SwiftUI.View {
                 SwiftUI.Image(systemName: "info.circle.fill")
                     .foregroundColor(.purple)
                     .font(.subheadline)
-                SwiftUI.Text("**Lưu ý quan trọng:** Các phiên bản iOS dưới 27 chưa hỗ trợ tự tạo tệp Pairing trực tiếp trên điện thoại. Bạn chỉ cần dùng máy tính tạo tệp **1 lần duy nhất**, sau đó sử dụng vĩnh viễn trên iPhone qua 4G / Wi-Fi.")
+                SwiftUI.Text("**Lưu ý quan trọng:** Theo hiểu biết thiếu sót của mình thì các phiên bán iOS dưới 27 chưa hỗ trợ tự tạo tệp Pairing trực tiếp trên điện thoại. Bạn cần dùng máy tính tạo tệp 1 lần, sau đó có thể tái sử dụng tệp Pairing mà không cần máy tính (nếu đã lưu tệp Pairing vào Iphone).")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -1119,7 +1102,7 @@ struct PairingGuideSheetView: SwiftUI.View {
                 GuideStepRow(
                     num: "1",
                     title: "Chuẩn bị công cụ trên Máy tính",
-                    text: "• **Nếu dùng Windows:** Cài đặt **iTunes** và **iCloud** bản chính thức từ trang chủ Apple (không tải từ Microsoft Store) để máy tính có đầy đủ Driver nhận diện iPhone.\n• **Tải công cụ tạo Pairing:** Tải phần mềm **iLoader** (hoặc **idevice_pair / jitterbugpair**) về máy tính."
+                    text: "• **Nếu dùng Windows:** Cài đặt **iTunes** và **iCloud**.\n• **Tải công cụ tạo Pairing:** Tải phần mềm **iLoader** (hoặc **idevice_pair / jitterbugpair**) về máy tính."
                 )
                 
                 GuideStepRow(
@@ -1131,7 +1114,7 @@ struct PairingGuideSheetView: SwiftUI.View {
                 GuideStepRow(
                     num: "3",
                     title: "Xuất tệp Pairing từ công cụ",
-                    text: "Mở công cụ **iLoader** (hoặc **idevice_pair**) trên máy tính:\n• Chọn đúng tên thiết bị iPhone của bạn.\n• Nhấn nút **Generate / Export Pairing File** để phần mềm tạo ra tệp có đuôi **`.mobiledevicepairing`** hoặc **`.plist`**."
+                    text: "Mở công cụ **iLoader** (hoặc **idevice_pair**) trên máy tính:\n• Chọn đúng tên thiết bị iPhone của bạn.\n• Nhấn nút **Generate / Export Pairing File** để phần mềm tạo ra tệp có đuôi **`.mobiledevicepairing`** hoặc **`.plist`**.\n(Phần này AI viết chứ mình không biết chính xác, tuy nhiên 3 công cụ đó có thể tạo và cài Pairing lên iphone)"
                 )
                 
                 GuideStepRow(
@@ -1238,18 +1221,20 @@ struct VpnDetailSheetView: SwiftUI.View {
                         
                         HStack {
                             SwiftUI.Text("Tunnel IP")
+                                .font(.footnote)
                                 .foregroundColor(.secondary)
                             Spacer()
                             SwiftUI.Text(tunnelIP)
-                                .font(.system(.body, design: .monospaced).bold())
+                                .font(.system(.subheadline, design: .monospaced).bold())
                         }
                         Divider()
                         HStack {
                             SwiftUI.Text("Device IP")
+                                .font(.footnote)
                                 .foregroundColor(.secondary)
                             Spacer()
                             SwiftUI.Text(deviceIP)
-                                .font(.system(.body, design: .monospaced).bold())
+                                .font(.system(.subheadline, design: .monospaced).bold())
                         }
                     }
                     .padding(16)
@@ -1258,11 +1243,11 @@ struct VpnDetailSheetView: SwiftUI.View {
                     
                     VStack(alignment: .leading, spacing: 12) {
                         SwiftUI.Label("Cấu hình khuyên dùng cho iOS 27", systemImage: "lightbulb.fill")
-                            .font(.headline)
+                            .font(.system(size: 16, weight: .bold))
                             .foregroundColor(.orange)
                         
-                        SwiftUI.Text("Nếu dùng iOS 27, hãy đặt IP trong LocalDevVPN theo thông số sau để kết nối nhanh nhất:")
-                            .font(.subheadline)
+                        SwiftUI.Text("Nếu dùng iOS 27 và bản LiveContainer+SideStore này, hãy đặt IP trong LocalDevVPN theo thông số sau để kết nối nhanh nhất:")
+                            .font(.footnote)
                             .foregroundColor(.secondary)
                         
                         CopyableIPCard(label: "Tunnel IP", value: "10.7.1.1/32")
@@ -1299,7 +1284,7 @@ struct CopyableIPCard: SwiftUI.View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 SwiftUI.Text(value)
-                    .font(.system(.title3, design: .monospaced).bold())
+                    .font(.system(.subheadline, design: .monospaced).bold())
                     .foregroundColor(.primary)
             }
             Spacer()
@@ -1483,7 +1468,7 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                             VStack(alignment: .leading, spacing: 3) {
                                 SwiftUI.Text("Use On-Device Anisette")
                                     .font(.subheadline.bold())
-                                SwiftUI.Text(vm.useOnDeviceAnisette ? "Đang BẬT (Khuyên tắt để ổn định hơn)" : "Đang TẮT (Chuẩn khuyên dùng ✅)")
+                                SwiftUI.Text(vm.useOnDeviceAnisette ? "Đang BẬT (Khuyên tắt để ổn định hơn)" : "(Nên Tắt)")
                                     .font(.caption)
                                     .foregroundColor(vm.useOnDeviceAnisette ? .red : .green)
                             }
@@ -1508,10 +1493,6 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                                 .cornerRadius(12)
                             }
                         }
-                        
-                        SwiftUI.Text("Nên **TẮT** mục này để sử dụng Máy chủ Anisette, giúp cài IPA và gia hạn qua 4G + VPN không bị lỗi.")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
                     }
                     .padding(16)
                     .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
