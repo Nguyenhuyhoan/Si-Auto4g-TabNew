@@ -1,4 +1,3 @@
-
 //
 //  NewsViewController.swift
 //  AltStore
@@ -32,9 +31,7 @@ class NewsViewController: UICollectionViewController {
         self.navigationItem.title = "Kiểm Tra Hệ Thống"
         self.collectionView.backgroundColor = .systemGroupedBackground
         
-        let checkView = SystemCheckDashboardView()
-        let hostingController = UIHostingController(rootView: checkView)
-        
+        let hostingController = UIHostingController(rootView: SystemCheckDashboardView())
         addChild(hostingController)
         hostingController.view.translatesAutoresizingMaskIntoConstraints = false
         hostingController.view.backgroundColor = .systemGroupedBackground
@@ -50,7 +47,6 @@ class NewsViewController: UICollectionViewController {
     }
 }
 
-// MARK: - ViewModel Cập Nhật Tức Thì & Chính Xác (Không gây nghẽn Minimuxer)
 @MainActor
 final class SystemCheckViewModel: ObservableObject {
     @Published var isPairingOK: Bool = false
@@ -65,7 +61,6 @@ final class SystemCheckViewModel: ObservableObject {
     @Published var cellularDetail: String = "Đang kiểm tra..."
     @Published var hasInternet: Bool = false
     
-    // Trạng thái Máy chủ Anisette (Tắt Use On-Device Anisette = Ổn định / Tích xanh)
     @Published var isAnisetteOK: Bool = !UserDefaults.standard.useOnDeviceAnisette
     @Published var useOnDeviceAnisette: Bool = UserDefaults.standard.useOnDeviceAnisette
     @Published var anisetteDetail: String = "Đang kiểm tra..."
@@ -76,7 +71,6 @@ final class SystemCheckViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var timerTask: Task<Void, Never>?
     
-    // Chống gọi chồng chéo làm nghẽn kết nối tới Minimuxer
     private var isChecking: Bool = false
     private var lastVerifiedPairingSuccess: Bool = false
     
@@ -91,7 +85,6 @@ final class SystemCheckViewModel: ObservableObject {
     }
     
     private func setupRealtimeListeners() {
-        // 1. Lắng nghe thay đổi mạng 4G/Internet từ iOS tức thì
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let usesCell = path.usesInterfaceType(.cellular)
             let satisfied = path.status == .satisfied
@@ -105,7 +98,6 @@ final class SystemCheckViewModel: ObservableObject {
         }
         pathMonitor.start(queue: monitorQueue)
         
-        // 2. Lắng nghe thay đổi VPN/Network từ Minimuxer tức thì
         minimuxer.network.pathPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -117,7 +109,6 @@ final class SystemCheckViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // 3. Lắng nghe thay đổi trạng thái Pairing/Muxer tức thì
         minimuxerStatusPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -129,7 +120,6 @@ final class SystemCheckViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // 4. Lắng nghe thay đổi cài đặt UserDefaults (Use On-Device Anisette & Máy chủ Anisette)
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -137,7 +127,6 @@ final class SystemCheckViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // 5. Khi quay lại app từ Cài đặt hoặc LocalDevVPN -> Kiểm tra ngay lập tức
         NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -149,7 +138,6 @@ final class SystemCheckViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // 6. Vòng lặp cập nhật nhẹ nhàng mỗi 2 giây
         timerTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self = self else { break }
@@ -159,7 +147,6 @@ final class SystemCheckViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Quét trực tiếp các Interface hệ thống (4G pdp_ip* và VPN utun*)
     private struct SystemInterfaceSnapshot: Sendable {
         let hasCellularPdp: Bool
         let hasActiveUtun: Bool
@@ -173,12 +160,8 @@ final class SystemCheckViewModel: ObservableObject {
         
         for iface in minimuxer.network.activeInterfaces {
             let lower = iface.name.lowercased()
-            if lower.hasPrefix("pdp_ip") {
-                hasPdp = true
-            }
-            if lower.hasPrefix("utun") {
-                hasUtun = true
-            }
+            if lower.hasPrefix("pdp_ip") { hasPdp = true }
+            if lower.hasPrefix("utun") { hasUtun = true }
         }
         
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
@@ -192,10 +175,8 @@ final class SystemCheckViewModel: ObservableObject {
                     let family = addr.pointee.sa_family
                     let name = String(cString: current.pointee.ifa_name).lowercased()
                     
-                    if family == UInt8(AF_INET) || family == UInt8(AF_INET6) {
-                        if name.hasPrefix("pdp_ip") {
-                            hasPdp = true
-                        }
+                    if (family == UInt8(AF_INET) || family == UInt8(AF_INET6)), name.hasPrefix("pdp_ip") {
+                        hasPdp = true
                     }
                     
                     if family == UInt8(AF_INET), name.hasPrefix("utun") {
@@ -211,7 +192,6 @@ final class SystemCheckViewModel: ObservableObject {
                         ) == 0 {
                             let ip = String(cString: hostname)
                             if !ip.isEmpty && !ip.hasPrefix("169.254.") {
-                                // Ưu tiên nhận diện IP của LocalDevVPN / StosVPN / WireGuard (10.7.x.x)
                                 if ip.hasPrefix("10.7.") {
                                     hasUtun = true
                                     bestUtunIP = ip
@@ -234,17 +214,14 @@ final class SystemCheckViewModel: ObservableObject {
         )
     }
     
-    // MARK: - Bật/Tắt nhanh Use On-Device Anisette đồng bộ trực tiếp với Cài đặt
     func setUseOnDeviceAnisette(_ enabled: Bool) {
         UserDefaults.standard.useOnDeviceAnisette = enabled
         updateInstantStatus()
     }
     
-    // MARK: - Cập nhật nhanh trạng thái UI không cần chờ đợi
     func updateInstantStatus() {
         let snapshot = Self.scanSystemInterfaces()
         
-        // 1. Trạng thái 4G / Di động
         self.isCellularOK = usesCellularPath || snapshot.hasCellularPdp
         if usesCellularPath {
             self.cellularDetail = "Ổn định • Đang dùng trực tiếp 4G / Di động"
@@ -254,7 +231,6 @@ final class SystemCheckViewModel: ObservableObject {
             self.cellularDetail = "Không ổn định • Đang tắt Dữ liệu di động (4G)"
         }
         
-        // 2. Trạng thái LocalDevVPN (Kiểm tra thực tế cả ConnectionConfig lẫn utun hệ thống)
         let config = ConnectionConfig.shared
         let rawTunnelIP = config.tunnelIfaceIp ?? snapshot.detectedUtunIPv4
         let rawPeerIP: String? = {
@@ -264,35 +240,19 @@ final class SystemCheckViewModel: ObservableObject {
             if let peer = config.tunnelPeerIp, !peer.isEmpty {
                 return peer
             }
-            // Nếu utun đang là 10.7.1.1 (cấu hình iOS 27) hoặc 10.7.0.x thì peer mặc định là 10.7.0.1
             if let tIP = rawTunnelIP, tIP.hasPrefix("10.7.") {
                 return "10.7.0.1"
             }
             return nil
         }()
         
-        if let formattedIface = config.formattedTunnelIface {
-            self.tunnelIP = formattedIface
-        } else if let tIP = rawTunnelIP {
-            self.tunnelIP = tIP
-        } else {
-            self.tunnelIP = "Chưa kết nối"
-        }
+        self.tunnelIP = config.formattedTunnelIface ?? rawTunnelIP ?? "Chưa kết nối"
+        self.deviceIP = config.formattedTunnelPeer ?? rawPeerIP ?? "Chưa kết nối"
         
-        if let formattedPeer = config.formattedTunnelPeer {
-            self.deviceIP = formattedPeer
-        } else if let pIP = rawPeerIP {
-            self.deviceIP = pIP
-        } else {
-            self.deviceIP = "Chưa kết nối"
-        }
-        
-        let vpnReady = minimuxer.network.isUTunAvailable
+        self.isVpnOK = minimuxer.network.isUTunAvailable
             || (snapshot.hasActiveUtun && rawTunnelIP != nil)
             || (config.formattedTunnelIface != nil && config.formattedTunnelPeer != nil)
-        self.isVpnOK = vpnReady
         
-        // 3. Trạng thái Pairing File hiện có
         let hasRp = PairingFileManager.shared.hasPairingFile(for: .rppairing)
         let hasLd = PairingFileManager.shared.hasPairingFile(for: .lockdown)
         let hasUnk = PairingFileManager.shared.hasPairingFile(for: .unknown)
@@ -329,21 +289,17 @@ final class SystemCheckViewModel: ObservableObject {
             self.isPairingOK = true
         }
         
-        // 4. Trạng thái Máy chủ Anisette (Tắt Use On-Device Anisette = Ổn định / Tích xanh)
         let onDevice = UserDefaults.standard.useOnDeviceAnisette
         self.useOnDeviceAnisette = onDevice
         self.isAnisetteOK = !onDevice
         
         let selectedURL = UserDefaults.standard.selectedAnisetteURL
         let serverHost = URL(string: selectedURL)?.host ?? selectedURL
-        if onDevice {
-            self.anisetteDetail = "Chưa ổn định • Hãy tắt Use On-Device Anisette"
-        } else {
-            self.anisetteDetail = "Ổn định • Đang dùng máy chủ (\(serverHost))"
-        }
+        self.anisetteDetail = onDevice
+            ? "Chưa ổn định • Hãy tắt Use On-Device Anisette"
+            : "Ổn định • Đang dùng máy chủ (\(serverHost))"
     }
     
-    // MARK: - Kiểm tra chuyên sâu ở Background (An toàn, không làm nghẽn Cài/Refresh App)
     func checkAllStatuses(forceVerify: Bool = false) async {
         updateInstantStatus()
         
@@ -351,7 +307,6 @@ final class SystemCheckViewModel: ObservableObject {
         isChecking = true
         defer { isChecking = false }
         
-        // Nếu có file Pairing trong bộ nhớ mà Minimuxer chưa nạp vào core -> nạp nhẹ nhàng
         if hasAnyStoredPairingFile && !minimuxer.core.isPairingFileLoaded {
             let proto: PairingProtocol = PairingFileManager.shared.persistedActiveProtocol
                 ?? (PairingFileManager.shared.hasPairingFile(for: .rppairing) ? .rppairing : .lockdown)
@@ -359,10 +314,8 @@ final class SystemCheckViewModel: ObservableObject {
             updateInstantStatus()
         }
         
-        // Nếu VPN và Pairing File đều đã có nhưng chưa từng verify UDID (hoặc người dùng kéo làm mới)
         if isVpnOK && (hasAnyStoredPairingFile || minimuxer.core.isPairingFileLoaded) {
             if forceVerify || !lastVerifiedPairingSuccess {
-                // Dùng forceLive: false trước để tránh tranh chấp kênh nếu đang cài/refresh app
                 if let udid = try? await fetchUDID(forceLive: false), !udid.isEmpty {
                     self.lastVerifiedPairingSuccess = true
                     self.isPairingOK = true
@@ -376,7 +329,6 @@ final class SystemCheckViewModel: ObservableObject {
     }
 }
 
-// MARK: - Giao Diện Chính (Tab Check)
 struct SystemCheckDashboardView: SwiftUI.View {
     @StateObject private var vm = SystemCheckViewModel()
     @State private var showPairingSheet = false
@@ -386,52 +338,10 @@ struct SystemCheckDashboardView: SwiftUI.View {
     
     var body: some SwiftUI.View {
         ScrollView {
-            VStack(spacing: 20) {
+            VStack(spacing: 22) {
                 headerBanner
-                
-                VStack(alignment: .leading, spacing: 12) {
-                    SwiftUI.Text("TRẠNG THÁI HỆ THỐNG (NHẤN ĐỂ XEM CHI TIẾT)")
-                        .font(.caption.bold())
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 4)
-                    
-                    CheckItemButton(
-                        title: "Pairing File",
-                        subtitle: vm.isPairingOK ? "Ổn định • \(vm.pairingProtocol)" : "Không ổn định • Nhấn để Cài / Nhập Pairing",
-                        icon: "doc.badge.gearshape.fill",
-                        isStable: vm.isPairingOK
-                    ) {
-                        showPairingSheet = true
-                    }
-                    
-                    CheckItemButton(
-                        title: "LocalDevVPN",
-                        subtitle: vm.isVpnOK ? "Ổn định • Tunnel: \(vm.tunnelIP)" : "Không ổn định • Nhấn xem cấu hình IP",
-                        icon: "network.badge.shield.half.filled",
-                        isStable: vm.isVpnOK
-                    ) {
-                        showVpnSheet = true
-                    }
-                    
-                    CheckItemButton(
-                        title: "Mạng 4G / Di động",
-                        subtitle: vm.cellularDetail,
-                        icon: "antenna.radiowaves.left.and.right",
-                        isStable: vm.isCellularOK
-                    ) {
-                        showCellularSheet = true
-                    }
-                    
-                    CheckItemButton(
-                        title: "Máy chủ Anisette",
-                        subtitle: vm.anisetteDetail,
-                        icon: "server.rack",
-                        isStable: vm.isAnisetteOK
-                    ) {
-                        showAnisetteSheet = true
-                    }
-                }
-                
+                systemStatusSection
+                serverSection
                 shortcutsSection
                 automationGuideSection
             }
@@ -440,9 +350,7 @@ struct SystemCheckDashboardView: SwiftUI.View {
         .background(SwiftUI.Color(UIColor.systemGroupedBackground))
         .onAppear {
             vm.updateInstantStatus()
-            Task {
-                await vm.checkAllStatuses(forceVerify: true)
-            }
+            Task { await vm.checkAllStatuses(forceVerify: true) }
         }
         .refreshable {
             await vm.checkAllStatuses(forceVerify: true)
@@ -482,80 +390,171 @@ struct SystemCheckDashboardView: SwiftUI.View {
         .cornerRadius(16)
     }
     
-    private var shortcutsSection: some SwiftUI.View {
-        VStack(alignment: .leading, spacing: 12) {
-            SwiftUI.Text("PHÍM TẮT DÙNG CHO CÀI & LÀM MỚI APP QUA 4G + VPN")
-                .font(.caption.bold())
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 4)
+    private var systemStatusSection: some SwiftUI.View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeaderView(
+                title: "Trạng Thái Hệ Thống",
+                subtitle: "Nhấn vào từng mục để kiểm tra & cài đặt",
+                icon: "cpu.fill",
+                color: .blue
+            )
             
-            VStack(spacing: 10) {
-                ShortcutLinkRow(
-                    title: "Phím tắt Tắt 4G",
-                    subtitle: "Tắt nhanh dữ liệu di động",
-                    icon: "antenna.radiowaves.left.and.right.slash",
-                    color: .red,
-                    urlString: "https://www.icloud.com/shortcuts/ee47f3710b02435883faa746c7355236"
-                )
-                
-                ShortcutLinkRow(
-                    title: "Phím tắt Bật 4G",
-                    subtitle: "Bật nhanh dữ liệu di động",
-                    icon: "antenna.radiowaves.left.and.right",
-                    color: .blue,
-                    urlString: "https://www.icloud.com/shortcuts/10bd8bb0aa1540c4b1221182b835fc43"
-                )
-                
-                ShortcutLinkRow(
-                    title: "Tự động làm mới App hằng ngày (6h sáng)",
-                    subtitle: "Tự động làm mới qua 4G + VPN lúc 6:00 sáng",
-                    icon: "clock.arrow.2.circlepath",
-                    color: .green,
-                    urlString: "https://www.icloud.com/shortcuts/56b0ab8cb0984d0b9a98543ac879eeec"
-                )
-                
-                ShortcutLinkRow(
-                    title: "Tự động làm mới App hằng ngày (3h chiều)",
-                    subtitle: "Tự động làm mới qua 4G + VPN lúc 15:00 chiều",
-                    icon: "sun.max.circle.fill",
-                    color: .orange,
-                    urlString: "https://www.icloud.com/shortcuts/22fa426ac9434b5ca5f7ccda0febd3a8"
-                )
+            CheckItemButton(
+                title: "Pairing File",
+                subtitle: vm.isPairingOK ? "Ổn định • \(vm.pairingProtocol)" : "Không ổn định • Nhấn để Cài / Nhập Pairing",
+                icon: "doc.badge.gearshape.fill",
+                isStable: vm.isPairingOK
+            ) {
+                showPairingSheet = true
             }
+            
+            CheckItemButton(
+                title: "LocalDevVPN",
+                subtitle: vm.isVpnOK ? "Ổn định • Tunnel: \(vm.tunnelIP)" : "Không ổn định • Nhấn xem cấu hình IP",
+                icon: "network.badge.shield.half.filled",
+                isStable: vm.isVpnOK
+            ) {
+                showVpnSheet = true
+            }
+            
+            CheckItemButton(
+                title: "Mạng 4G / Di động",
+                subtitle: vm.cellularDetail,
+                icon: "antenna.radiowaves.left.and.right",
+                isStable: vm.isCellularOK
+            ) {
+                showCellularSheet = true
+            }
+        }
+    }
+    
+    private var serverSection: some SwiftUI.View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeaderView(
+                title: "Máy Chủ",
+                subtitle: "Quản lý Máy chủ Anisette & xác thực Apple ID",
+                icon: "server.rack",
+                color: .purple
+            )
+            
+            CheckItemButton(
+                title: "Máy chủ Anisette",
+                subtitle: vm.anisetteDetail,
+                icon: "server.rack",
+                isStable: vm.isAnisetteOK
+            ) {
+                showAnisetteSheet = true
+            }
+        }
+    }
+    
+    private var shortcutsSection: some SwiftUI.View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeaderView(
+                title: "Phím Tắt",
+                subtitle: "Hỗ trợ cài & tự động làm mới App qua 4G + VPN",
+                icon: "bolt.circle.fill",
+                color: .orange
+            )
+            
+            ShortcutLinkRow(
+                title: "Phím tắt Tắt 4G",
+                subtitle: "Tắt nhanh dữ liệu di động",
+                icon: "antenna.radiowaves.left.and.right.slash",
+                color: .red,
+                urlString: "https://www.icloud.com/shortcuts/ee47f3710b02435883faa746c7355236"
+            )
+            
+            ShortcutLinkRow(
+                title: "Phím tắt Bật 4G",
+                subtitle: "Bật nhanh dữ liệu di động",
+                icon: "antenna.radiowaves.left.and.right",
+                color: .blue,
+                urlString: "https://www.icloud.com/shortcuts/10bd8bb0aa1540c4b1221182b835fc43"
+            )
+            
+            ShortcutLinkRow(
+                title: "Tự động làm mới App hằng ngày (6h sáng)",
+                subtitle: "Tự động làm mới qua 4G + VPN lúc 6:00 sáng",
+                icon: "clock.arrow.2.circlepath",
+                color: .green,
+                urlString: "https://www.icloud.com/shortcuts/56b0ab8cb0984d0b9a98543ac879eeec"
+            )
+            
+            ShortcutLinkRow(
+                title: "Tự động làm mới App hằng ngày (3h chiều)",
+                subtitle: "Tự động làm mới qua 4G + VPN lúc 15:00 chiều",
+                icon: "sun.max.circle.fill",
+                color: .orange,
+                urlString: "https://www.icloud.com/shortcuts/22fa426ac9434b5ca5f7ccda0febd3a8"
+            )
         }
     }
     
     private var automationGuideSection: some SwiftUI.View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                SwiftUI.Image(systemName: "bell.badge.fill")
-                    .foregroundColor(.orange)
-                SwiftUI.Text("Lưu ý khi cài đặt Phím tắt Tự động làm mới")
-                    .font(.subheadline.bold())
-            }
+            SectionHeaderView(
+                title: "Hướng Dẫn Tự Động Hóa",
+                subtitle: "Thiết lập tự động gia hạn ứng dụng hằng ngày",
+                icon: "bell.badge.fill",
+                color: .green
+            )
             
-            SwiftUI.Text("Để bật chế độ tự động chạy hằng ngày lúc 6h sáng hoặc 3h chiều, bạn cần vào ứng dụng **Phím tắt** ➔ bật mục **“Tự động hóa”** và thiết lập giống như 2 ảnh hướng dẫn dưới đây:")
-                .font(.footnote)
-                .foregroundColor(.secondary)
-            
-            VStack(spacing: 14) {
-                RemoteGuideImageView(
-                    urlString: "https://raw.githubusercontent.com/Nguyenhuyhoan/icons/main/IMG_2589.jpeg",
-                    caption: "Ảnh 1: Bật mục Tự động hóa trong ứng dụng Phím tắt"
-                )
-                RemoteGuideImageView(
-                    urlString: "https://raw.githubusercontent.com/Nguyenhuyhoan/icons/main/IMG_2588.jpeg",
-                    caption: "Ảnh 2: Thiết lập tự động chạy hằng ngày"
-                )
+            VStack(alignment: .leading, spacing: 12) {
+                SwiftUI.Text("Để bật chế độ tự động chạy hằng ngày lúc 6h sáng hoặc 3h chiều, bạn vào ứng dụng **Phím tắt** ➔ chọn mục **“Tự động hóa”** và thiết lập giống như 2 ảnh hướng dẫn dưới đây:")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                
+                VStack(spacing: 14) {
+                    RemoteGuideImageView(
+                        urlString: "https://raw.githubusercontent.com/Nguyenhuyhoan/icons/main/IMG_2589.jpeg",
+                        caption: "Ảnh 1: Bật mục Tự động hóa trong ứng dụng Phím tắt"
+                    )
+                    RemoteGuideImageView(
+                        urlString: "https://raw.githubusercontent.com/Nguyenhuyhoan/icons/main/IMG_2588.jpeg",
+                        caption: "Ảnh 2: Thiết lập tự động chạy hằng ngày"
+                    )
+                }
             }
+            .padding()
+            .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
+            .cornerRadius(16)
         }
-        .padding()
-        .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
-        .cornerRadius(16)
     }
 }
 
-// MARK: - Các Component Giao Diện
+struct SectionHeaderView: SwiftUI.View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let color: SwiftUI.Color
+    
+    var body: some SwiftUI.View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(color.opacity(0.15))
+                    .frame(width: 32, height: 32)
+                SwiftUI.Image(systemName: icon)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(color)
+            }
+            
+            VStack(alignment: .leading, spacing: 2) {
+                SwiftUI.Text(title)
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                SwiftUI.Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 4)
+        .padding(.bottom, 2)
+    }
+}
+
 struct CheckItemButton: SwiftUI.View {
     let title: String
     let subtitle: String
@@ -705,7 +704,6 @@ struct RemoteGuideImageView: SwiftUI.View {
     }
 }
 
-// MARK: - 1. Trang Hướng Dẫn & Thao Tác Trực Tiếp Pairing File
 struct PairingGuideSheetView: SwiftUI.View {
     @ObservedObject var vm: SystemCheckViewModel
     @StateObject private var wirelessVM = WirelessPairViewModel()
@@ -718,7 +716,6 @@ struct PairingGuideSheetView: SwiftUI.View {
     
     @Environment(\.dismiss) private var dismiss
     
-    /// Đường dẫn file Pairing dùng để Xuất & Lưu vào Tệp (chỉ hiện sau khi Cài Pairing lên iPhone xong)
     private var installedPairingURLForExport: URL? {
         if let url = wirelessVM.shareSheetURL, FileManager.default.fileExists(atPath: url.path) {
             return url
@@ -730,25 +727,8 @@ struct PairingGuideSheetView: SwiftUI.View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Trạng thái hiện tại
-                    HStack(spacing: 12) {
-                        SwiftUI.Image(systemName: vm.isPairingOK ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .font(.title)
-                            .foregroundColor(vm.isPairingOK ? .green : .red)
-                        VStack(alignment: .leading, spacing: 2) {
-                            SwiftUI.Text(vm.isPairingOK ? "Pairing File Đang Ổn Định" : "Pairing File Chưa Ổn Định")
-                                .font(.headline)
-                            SwiftUI.Text("Trạng thái: \(vm.pairingProtocol)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .padding()
-                    .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
-                    .cornerRadius(14)
+                    statusHeaderCard
                     
-                    // Thông báo phản hồi nhanh khi Nhập / Xoá / Cài xong
                     if let banner = statusBannerMessage {
                         HStack(spacing: 10) {
                             SwiftUI.Image(systemName: "info.circle.fill")
@@ -763,166 +743,9 @@ struct PairingGuideSheetView: SwiftUI.View {
                         .cornerRadius(12)
                     }
                     
-                    // KHU VỰC QUẢN LÝ TỆP PAIRING NHANH (Nhập & Xoá)
-                    VStack(alignment: .leading, spacing: 12) {
-                        SwiftUI.Label("Quản lý tệp Pairing nhanh", systemImage: "folder.fill.badge.gearshape")
-                            .font(.headline)
-                            .foregroundColor(.primary)
-                        
-                        HStack(spacing: 12) {
-                            // Nút Nhập tệp Pairing
-                            SwiftUI.Button {
-                                pairingMgmtVM.promptImport(for: .rppairing)
-                            } label: {
-                                HStack(spacing: 8) {
-                                    SwiftUI.Image(systemName: "square.and.arrow.down.fill")
-                                    SwiftUI.Text("Nhập tệp Pairing")
-                                        .font(.subheadline.bold())
-                                }
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 13)
-                                .background(SwiftUI.Color.blue)
-                                .cornerRadius(12)
-                            }
-                            
-                            // Nút Xoá tệp Pairing hiện tại
-                            SwiftUI.Button {
-                                showDeleteConfirm = true
-                            } label: {
-                                HStack(spacing: 8) {
-                                    SwiftUI.Image(systemName: "trash.fill")
-                                    SwiftUI.Text("Xoá tệp Pairing")
-                                        .font(.subheadline.bold())
-                                }
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 13)
-                                .background(SwiftUI.Color.red)
-                                .cornerRadius(12)
-                            }
-                        }
-                    }
-                    .padding()
-                    .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
-                    .cornerRadius(16)
-                    
-                    // HƯỚNG DẪN & NÚT CÀI PAIRING TRỰC TIẾP TRÊN iOS 27
-                    VStack(alignment: .leading, spacing: 14) {
-                        SwiftUI.Label("Dành cho iOS 27 (Ghép nối trực tiếp không cần PC)", systemImage: "iphone.radiowaves.left.and.right")
-                            .font(.headline)
-                            .foregroundColor(.blue)
-                        
-                        GuideStepRow(num: "1", text: "Nhấn trực tiếp nút **“Cài Pairing lên iPhone”** ngay bên dưới để khởi chạy máy chủ ghép nối.")
-                        GuideStepRow(num: "2", text: "Mở ứng dụng **Cài đặt** của iPhone ➔ **Quyền riêng tư & Bảo mật** ➔ **Chế độ nhà phát triển (Developer Mode)**.")
-                        GuideStepRow(num: "3", text: "Kiểm tra danh sách thiết bị đã ghép nối: nếu có thiết bị nào đã ghép nối từ trước thì **xoá hết đi**, sau đó nhấn chọn **Pair with SideStore** và nhập mật khẩu mở máy.")
-                        GuideStepRow(num: "4", text: "Quay lại màn hình này, ghi nhớ **6 chữ số** hiện lên bên dưới, rồi chuyển lại qua ứng dụng **Cài đặt** để nhập 6 số đó vào.")
-                        GuideStepRow(num: "5", text: "Khi cài xong Pairing lên iPhone, nút **“Xuất và lưu file Pairing vào Tệp”** sẽ xuất hiện bên dưới để bạn lưu lại dùng về sau.")
-                        
-                        Divider().padding(.vertical, 4)
-                        
-                        // Trạng thái trực tiếp của Wireless Pairing Server
-                        VStack(spacing: 12) {
-                            HStack(spacing: 10) {
-                                Circle()
-                                    .fill(wirelessVM.isAdvertising ? SwiftUI.Color.green : SwiftUI.Color.secondary.opacity(0.4))
-                                    .frame(width: 10, height: 10)
-                                SwiftUI.Text(wirelessVM.statusText)
-                                    .font(.subheadline.bold())
-                                Spacer()
-                            }
-                            
-                            SwiftUI.Text(wirelessVM.subStatusText)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            
-                            // Hiển thị ngay mã PIN 6 số tại đây nếu iPhone yêu cầu
-                            if let pin = wirelessVM.pinCode {
-                                VStack(spacing: 8) {
-                                    SwiftUI.Text("MÃ GHÉP NỐI 6 CHỮ SỐ CỦA BẠN:")
-                                        .font(.caption.bold())
-                                        .foregroundColor(.blue)
-                                    SwiftUI.Text(pin)
-                                        .font(.system(size: 32, weight: .heavy, design: .monospaced))
-                                        .tracking(6)
-                                        .foregroundColor(.primary)
-                                        .padding(.vertical, 8)
-                                        .padding(.horizontal, 20)
-                                        .background(RoundedRectangle(cornerRadius: 12).fill(SwiftUI.Color.blue.opacity(0.12)))
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 4)
-                            }
-                            
-                            if let errorMsg = wirelessVM.errorMessage {
-                                SwiftUI.Text(errorMsg)
-                                    .font(.caption)
-                                    .foregroundColor(.red)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            
-                            // Nút 1: Cài Pairing lên iPhone (Start / Stop Pairing Server)
-                            SwiftUI.Button {
-                                wirelessVM.togglePairing()
-                            } label: {
-                                HStack(spacing: 10) {
-                                    SwiftUI.Image(systemName: wirelessVM.isAdvertising ? "stop.circle.fill" : "antenna.radiowaves.left.and.right")
-                                        .font(.system(size: 18, weight: .bold))
-                                    SwiftUI.Text(wirelessVM.isAdvertising ? "Dừng Cài Pairing (Stop Server)" : "Cài Pairing lên iPhone")
-                                        .font(.headline)
-                                }
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 50)
-                                .background(wirelessVM.isAdvertising ? SwiftUI.Color.red : SwiftUI.Color.accentColor)
-                                .cornerRadius(14)
-                            }
-                            
-                            // Nút 2: Xuất và lưu file Pairing vào Tệp (CHỈ HIỆN KHI ĐÃ CÀI XONG PAIRING LÊN IPHONE)
-                            if let pairedURL = installedPairingURLForExport {
-                                SwiftUI.Button {
-                                    exportFileURL = pairedURL
-                                    isExportSheetPresented = true
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        SwiftUI.Image(systemName: "square.and.arrow.up.fill")
-                                            .font(.system(size: 18, weight: .bold))
-                                        SwiftUI.Text("Xuất và lưu file Pairing vào Tệp")
-                                            .font(.headline)
-                                    }
-                                    .foregroundColor(.white)
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 50)
-                                    .background(SwiftUI.Color.green)
-                                    .cornerRadius(14)
-                                }
-                                .transition(.scale.combined(with: .opacity))
-                            }
-                        }
-                        .padding(12)
-                        .background(SwiftUI.Color(UIColor.tertiarySystemGroupedBackground))
-                        .cornerRadius(14)
-                    }
-                    .padding()
-                    .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
-                    .cornerRadius(16)
-                    
-                    // Hướng dẫn dưới iOS 27
-                    VStack(alignment: .leading, spacing: 12) {
-                        SwiftUI.Label("Dành cho iOS dưới iOS 27 (Dùng iLoader & Máy tính)", systemImage: "laptopcomputer.and.iphone")
-                            .font(.headline)
-                            .foregroundColor(.purple)
-                        
-                        GuideStepRow(num: "1", text: "Trên máy tính, cài đặt **iTunes** và **iCloud** (bản chính thức từ Apple), sau đó tải và mở công cụ **iLoader**.")
-                        GuideStepRow(num: "2", text: "Cắm cáp kết nối iPhone vào máy tính, mở khóa màn hình iPhone và nhấn **Tin cậy (Trust)** máy tính này.")
-                        GuideStepRow(num: "3", text: "Trên giao diện **iLoader**, chọn thiết bị của bạn rồi nhấn nút tạo **Pairing File** (hoặc gửi trực tiếp vào SideStore).")
-                        GuideStepRow(num: "4", text: "Nếu lưu thành file trên máy tính, hãy chuyển file đó sang iPhone và lưu vào ứng dụng **Tệp (Files)**.")
-                        GuideStepRow(num: "5", text: "Nhấn nút **“Nhập tệp Pairing”** màu xanh ở ngay đầu trang này để chọn file vừa lưu là hoàn tất.")
-                    }
-                    .padding()
-                    .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
-                    .cornerRadius(16)
+                    quickFileManagementCard
+                    ios27DirectPairingCard
+                    pcPairingGuideCard
                 }
                 .padding()
             }
@@ -968,15 +791,11 @@ struct PairingGuideSheetView: SwiftUI.View {
             )) {
                 if let pin = wirelessVM.pinCode {
                     if #available(iOS 16.0, tvOS 16.0, *) {
-                        WirelessPairPinDialog(pin: pin) {
-                            wirelessVM.pinCode = nil
-                        }
-                        .presentationDetents([.fraction(0.45), .medium])
-                        .presentationDragIndicator(.visible)
+                        WirelessPairPinDialog(pin: pin) { wirelessVM.pinCode = nil }
+                            .presentationDetents([.fraction(0.45), .medium])
+                            .presentationDragIndicator(.visible)
                     } else {
-                        WirelessPairPinDialog(pin: pin) {
-                            wirelessVM.pinCode = nil
-                        }
+                        WirelessPairPinDialog(pin: pin) { wirelessVM.pinCode = nil }
                     }
                 }
             }
@@ -1003,6 +822,183 @@ struct PairingGuideSheetView: SwiftUI.View {
             }
         }
     }
+    
+    private var statusHeaderCard: some SwiftUI.View {
+        HStack(spacing: 12) {
+            SwiftUI.Image(systemName: vm.isPairingOK ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .font(.title)
+                .foregroundColor(vm.isPairingOK ? .green : .red)
+            VStack(alignment: .leading, spacing: 2) {
+                SwiftUI.Text(vm.isPairingOK ? "Pairing File Đang Ổn Định" : "Pairing File Chưa Ổn Định")
+                    .font(.headline)
+                SwiftUI.Text("Trạng thái: \(vm.pairingProtocol)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding()
+        .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(14)
+    }
+    
+    private var quickFileManagementCard: some SwiftUI.View {
+        VStack(alignment: .leading, spacing: 12) {
+            SwiftUI.Label("Quản lý tệp Pairing nhanh", systemImage: "folder.fill.badge.gearshape")
+                .font(.headline)
+                .foregroundColor(.primary)
+            
+            HStack(spacing: 12) {
+                SwiftUI.Button {
+                    pairingMgmtVM.promptImport(for: .rppairing)
+                } label: {
+                    HStack(spacing: 8) {
+                        SwiftUI.Image(systemName: "square.and.arrow.down.fill")
+                        SwiftUI.Text("Nhập tệp Pairing")
+                            .font(.subheadline.bold())
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(SwiftUI.Color.blue)
+                    .cornerRadius(12)
+                }
+                
+                SwiftUI.Button {
+                    showDeleteConfirm = true
+                } label: {
+                    HStack(spacing: 8) {
+                        SwiftUI.Image(systemName: "trash.fill")
+                        SwiftUI.Text("Xoá tệp Pairing")
+                            .font(.subheadline.bold())
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(SwiftUI.Color.red)
+                    .cornerRadius(12)
+                }
+            }
+        }
+        .padding()
+        .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(16)
+    }
+    
+    private var ios27DirectPairingCard: some SwiftUI.View {
+        VStack(alignment: .leading, spacing: 14) {
+            SwiftUI.Label("Dành cho iOS 27 (Ghép nối trực tiếp không cần PC)", systemImage: "iphone.radiowaves.left.and.right")
+                .font(.headline)
+                .foregroundColor(.blue)
+            
+            GuideStepRow(num: "1", text: "Nhấn trực tiếp nút **“Cài Pairing lên iPhone”** ngay bên dưới để khởi chạy máy chủ ghép nối.")
+            GuideStepRow(num: "2", text: "Mở ứng dụng **Cài đặt** của iPhone ➔ **Quyền riêng tư & Bảo mật** ➔ **Chế độ nhà phát triển (Developer Mode)**.")
+            GuideStepRow(num: "3", text: "Kiểm tra danh sách thiết bị đã ghép nối: nếu có thiết bị nào đã ghép nối từ trước thì **xoá hết đi**, sau đó nhấn chọn **Pair with SideStore** và nhập mật khẩu mở máy.")
+            GuideStepRow(num: "4", text: "Quay lại màn hình này, ghi nhớ **6 chữ số** hiện lên bên dưới, rồi chuyển lại qua ứng dụng **Cài đặt** để nhập 6 số đó vào.")
+            GuideStepRow(num: "5", text: "Khi cài xong Pairing lên iPhone, nút **“Xuất và lưu file Pairing vào Tệp”** sẽ xuất hiện bên dưới để bạn lưu lại dùng về sau.")
+            
+            Divider().padding(.vertical, 4)
+            
+            VStack(spacing: 12) {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(wirelessVM.isAdvertising ? SwiftUI.Color.green : SwiftUI.Color.secondary.opacity(0.4))
+                        .frame(width: 10, height: 10)
+                    SwiftUI.Text(wirelessVM.statusText)
+                        .font(.subheadline.bold())
+                    Spacer()
+                }
+                
+                SwiftUI.Text(wirelessVM.subStatusText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                if let pin = wirelessVM.pinCode {
+                    VStack(spacing: 8) {
+                        SwiftUI.Text("MÃ GHÉP NỐI 6 CHỮ SỐ CỦA BẠN:")
+                            .font(.caption.bold())
+                            .foregroundColor(.blue)
+                        SwiftUI.Text(pin)
+                            .font(.system(size: 32, weight: .heavy, design: .monospaced))
+                            .tracking(6)
+                            .foregroundColor(.primary)
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 20)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(SwiftUI.Color.blue.opacity(0.12)))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                }
+                
+                if let errorMsg = wirelessVM.errorMessage {
+                    SwiftUI.Text(errorMsg)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                
+                SwiftUI.Button {
+                    wirelessVM.togglePairing()
+                } label: {
+                    HStack(spacing: 10) {
+                        SwiftUI.Image(systemName: wirelessVM.isAdvertising ? "stop.circle.fill" : "antenna.radiowaves.left.and.right")
+                            .font(.system(size: 18, weight: .bold))
+                        SwiftUI.Text(wirelessVM.isAdvertising ? "Dừng Cài Pairing (Stop Server)" : "Cài Pairing lên iPhone")
+                            .font(.headline)
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .background(wirelessVM.isAdvertising ? SwiftUI.Color.red : SwiftUI.Color.accentColor)
+                    .cornerRadius(14)
+                }
+                
+                if let pairedURL = installedPairingURLForExport {
+                    SwiftUI.Button {
+                        exportFileURL = pairedURL
+                        isExportSheetPresented = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            SwiftUI.Image(systemName: "square.and.arrow.up.fill")
+                                .font(.system(size: 18, weight: .bold))
+                            SwiftUI.Text("Xuất và lưu file Pairing vào Tệp")
+                                .font(.headline)
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(SwiftUI.Color.green)
+                        .cornerRadius(14)
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .padding(12)
+            .background(SwiftUI.Color(UIColor.tertiarySystemGroupedBackground))
+            .cornerRadius(14)
+        }
+        .padding()
+        .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(16)
+    }
+    
+    private var pcPairingGuideCard: some SwiftUI.View {
+        VStack(alignment: .leading, spacing: 12) {
+            SwiftUI.Label("Dành cho iOS dưới iOS 27 (Dùng iLoader & Máy tính)", systemImage: "laptopcomputer.and.iphone")
+                .font(.headline)
+                .foregroundColor(.purple)
+            
+            GuideStepRow(num: "1", text: "Trên máy tính, cài đặt **iTunes** và **iCloud** (bản chính thức từ Apple), sau đó tải và mở công cụ **iLoader**.")
+            GuideStepRow(num: "2", text: "Cắm cáp kết nối iPhone vào máy tính, mở khóa màn hình iPhone và nhấn **Tin cậy (Trust)** máy tính này.")
+            GuideStepRow(num: "3", text: "Trên giao diện **iLoader**, chọn thiết bị của bạn rồi nhấn nút tạo **Pairing File** (hoặc gửi trực tiếp vào SideStore).")
+            GuideStepRow(num: "4", text: "Nếu lưu thành file trên máy tính, hãy chuyển file đó sang iPhone và lưu vào ứng dụng **Tệp (Files)**.")
+            GuideStepRow(num: "5", text: "Nhấn nút **“Nhập tệp Pairing”** màu xanh ở ngay đầu trang này để chọn file vừa lưu là hoàn tất.")
+        }
+        .padding()
+        .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(16)
+    }
 }
 
 struct GuideStepRow: SwiftUI.View {
@@ -1025,7 +1021,6 @@ struct GuideStepRow: SwiftUI.View {
     }
 }
 
-// MARK: - 2. Trang Chi Tiết LocalDevVPN
 struct VpnDetailSheetView: SwiftUI.View {
     let isVpnOK: Bool
     let tunnelIP: String
@@ -1143,7 +1138,6 @@ struct CopyableIPCard: SwiftUI.View {
     }
 }
 
-// MARK: - 3. Trang Chi Tiết Mạng 4G / Di Động
 struct CellularDetailSheetView: SwiftUI.View {
     let isCellularOK: Bool
     let detail: String
@@ -1194,7 +1188,6 @@ struct CellularDetailSheetView: SwiftUI.View {
     }
 }
 
-// MARK: - 4. Trang Chi Tiết & Cấu Hình Nhanh Máy Chủ Anisette
 struct AnisetteDetailSheetView: SwiftUI.View {
     @ObservedObject var vm: SystemCheckViewModel
     @ObservedObject private var serversManager = AnisetteServersManager.shared
@@ -1204,7 +1197,6 @@ struct AnisetteDetailSheetView: SwiftUI.View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // 1. Trạng thái hiện tại
                     HStack(spacing: 12) {
                         SwiftUI.Image(systemName: vm.isAnisetteOK ? "checkmark.circle.fill" : "xmark.circle.fill")
                             .font(.title)
@@ -1222,7 +1214,6 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                     .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
                     .cornerRadius(14)
                     
-                    // 2. Công tắc Bật / Tắt trực tiếp (Đồng bộ 2 chiều với Cài đặt)
                     VStack(alignment: .leading, spacing: 14) {
                         SwiftUI.Label("Thiết lập Use On-Device Anisette", systemImage: "switch.2")
                             .font(.headline)
@@ -1230,9 +1221,7 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                         
                         Toggle(isOn: Binding(
                             get: { vm.useOnDeviceAnisette },
-                            set: { newValue in
-                                vm.setUseOnDeviceAnisette(newValue)
-                            }
+                            set: { vm.setUseOnDeviceAnisette($0) }
                         )) {
                             VStack(alignment: .leading, spacing: 4) {
                                 SwiftUI.Text("Use On-Device Anisette")
@@ -1271,7 +1260,6 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                     .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
                     .cornerRadius(16)
                     
-                    // 3. Danh sách chọn nhanh Máy chủ Anisette
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             SwiftUI.Label("Danh sách Máy chủ Anisette", systemImage: "server.rack")
@@ -1282,9 +1270,7 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                                 ProgressView()
                             } else {
                                 SwiftUI.Button {
-                                    Task {
-                                        await serversManager.refreshPublicServers(force: true)
-                                    }
+                                    Task { await serversManager.refreshPublicServers(force: true) }
                                 } label: {
                                     SwiftUI.Label("Làm mới", systemImage: "arrow.clockwise")
                                         .font(.caption.bold())
@@ -1301,7 +1287,6 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                                 let isSelected = (serversManager.selectedServerURL == server.url)
                                 SwiftUI.Button {
                                     serversManager.selectServer(server)
-                                    // Nếu đang bật On-Device Anisette thì tự động tắt khi người dùng chọn máy chủ
                                     if vm.useOnDeviceAnisette {
                                         vm.setUseOnDeviceAnisette(false)
                                     } else {
