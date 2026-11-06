@@ -1,4 +1,3 @@
-// AltStore/News/NewsViewController.swift bằng đoạn code dưới đây:
 
 //
 //  NewsViewController.swift
@@ -598,7 +597,7 @@ struct PairingGuideSheetView: SwiftUI.View {
                     
                     // KHU VỰC QUẢN LÝ TỆP PAIRING NHANH (Nhập & Xoá)
                     VStack(alignment: .leading, spacing: 12) {
-                        SwiftUI.Label("Quản lý tệp Pairing nhanh", systemImage: "folder.Fill.badge.gearshape")
+                        SwiftUI.Label("Quản lý tệp Pairing nhanh", systemImage: "folder.fill.badge.gearshape")
                             .font(.headline)
                             .foregroundColor(.primary)
                         
@@ -773,7 +772,7 @@ struct PairingGuideSheetView: SwiftUI.View {
                     if let proto = PairingFileManager.shared.persistedActiveProtocol ?? PairingFileManager.shared.preferredProtocol {
                         try? await minimuxerSwitchPairingProtocol(to: proto)
                     } else {
-                        try? await ensureMinimuxerStarted()
+                        startMinimuxerThreads()
                     }
                     await vm.checkAllStatuses()
                     statusBannerMessage = "Đã nhập tệp Pairing thành công!"
@@ -824,7 +823,6 @@ struct PairingGuideSheetView: SwiftUI.View {
             }
             .onChange(of: wirelessVM.pairedDevice != nil) { isPaired in
                 if isPaired, let pairedURL = wirelessVM.shareSheetURL {
-                    // Tự động nạp file vừa ghép nối vào PairingFileManager và kích hoạt ngay lập tức
                     try? PairingFileManager.shared.importPairingFile(from: pairedURL, preferred: .rppairing)
                     Task { @MainActor in
                         try? await minimuxerSwitchPairingProtocol(to: .rppairing)
