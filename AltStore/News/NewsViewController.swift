@@ -769,11 +769,10 @@ struct PairingGuideSheetView: SwiftUI.View {
             ) { result in
                 pairingMgmtVM.handleImportResult(result)
                 Task { @MainActor in
-                    if let proto = PairingFileManager.shared.persistedActiveProtocol ?? PairingFileManager.shared.preferredProtocol {
-                        try? await minimuxerSwitchPairingProtocol(to: proto)
-                    } else {
-                        startMinimuxerThreads()
-                    }
+                    let proto = PairingFileManager.shared.persistedActiveProtocol
+                        ?? PairingFileManager.shared.preferredProtocol
+                        ?? .rppairing
+                    try? await minimuxerSwitchPairingProtocol(to: proto)
                     await vm.checkAllStatuses()
                     statusBannerMessage = "Đã nhập tệp Pairing thành công!"
                 }
