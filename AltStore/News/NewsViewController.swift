@@ -1,4 +1,4 @@
-// AltStore/News/NewsViewController.swift
+// AltStore/News/NewsViewController.swift bằng đoạn code dưới đây:
 
 //
 //  NewsViewController.swift
@@ -8,7 +8,9 @@
 @preconcurrency import UIKit
 import SwiftUI
 import Network
+import UniformTypeIdentifiers
 @preconcurrency import Minimuxer
+import MinimuxerCommon
 import Combine
 import Darwin
 
@@ -54,6 +56,7 @@ class NewsViewController: UICollectionViewController {
 final class SystemCheckViewModel: ObservableObject {
     @Published var isPairingOK: Bool = false
     @Published var pairingProtocol: String = "Đang kiểm tra..."
+    @Published var hasAnyStoredPairingFile: Bool = false
     
     @Published var isVpnOK: Bool = false
     @Published var tunnelIP: String = "Chưa có"
@@ -140,14 +143,12 @@ final class SystemCheckViewModel: ObservableObject {
     
     /// Kiểm tra thực tế xem interface 4G (pdp_ip*) có đang bật và có IP hay không
     private static func isCellularInterfaceActive() -> Bool {
-        // Kiểm tra trong activeInterfaces của Minimuxer
         for iface in minimuxer.network.activeInterfaces {
             if iface.name.lowercased().hasPrefix("pdp_ip") {
                 return true
             }
         }
         
-        // Kiểm tra trực tiếp bằng hệ thống getifaddrs của iOS
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return false }
         defer { freeifaddrs(ifaddr) }
@@ -185,6 +186,9 @@ final class SystemCheckViewModel: ObservableObject {
         
         self.tunnelIP = ConnectionConfig.shared.formattedTunnelIface ?? "Chưa kết nối"
         self.deviceIP = ConnectionConfig.shared.formattedTunnelPeer ?? "Chưa kết nối"
+        self.hasAnyStoredPairingFile = PairingFileManager.shared.hasPairingFile(for: .rppairing)
+            || PairingFileManager.shared.hasPairingFile(for: .lockdown)
+            || PairingFileManager.shared.hasPairingFile(for: .unknown)
     }
     
     /// Kiểm tra chuyên sâu ở luồng ngầm (không gây khựng giao diện)
@@ -244,7 +248,7 @@ struct SystemCheckDashboardView: SwiftUI.View {
                     
                     CheckItemButton(
                         title: "Pairing File",
-                        subtitle: vm.isPairingOK ? "Ổn định • \(vm.pairingProtocol)" : "Không ổn định • Nhấn xem hướng dẫn",
+                        subtitle: vm.isPairingOK ? "Ổn định • \(vm.pairingProtocol)" : "Không ổn định • Nhấn để Cài / Nhập Pairing",
                         icon: "doc.badge.gearshape.fill",
                         isStable: vm.isPairingOK
                     ) {
@@ -280,7 +284,7 @@ struct SystemCheckDashboardView: SwiftUI.View {
             await vm.checkAllStatuses()
         }
         .sheet(isPresented: $showPairingSheet) {
-            PairingGuideSheetView(isPairingOK: vm.isPairingOK, protocolName: vm.pairingProtocol)
+            PairingGuideSheetView(vm: vm)
         }
         .sheet(isPresented: $showVpnSheet) {
             VpnDetailSheetView(isVpnOK: vm.isVpnOK, tunnelIP: vm.tunnelIP, deviceIP: vm.deviceIP)
@@ -342,6 +346,14 @@ struct SystemCheckDashboardView: SwiftUI.View {
                     color: .green,
                     urlString: "https://www.icloud.com/shortcuts/56b0ab8cb0984d0b9a98543ac879eeec"
                 )
+                
+                ShortcutLinkRow(
+                    title: "Tự động làm mới App hằng ngày (3h chiều)",
+                    subtitle: "Tự động làm mới qua 4G + VPN lúc 15:00 chiều",
+                    icon: "sun.max.circle.fill",
+                    color: .orange,
+                    urlString: "https://www.icloud.com/shortcuts/22fa426ac9434b5ca5f7ccda0febd3a8"
+                )
             }
         }
     }
@@ -351,11 +363,11 @@ struct SystemCheckDashboardView: SwiftUI.View {
             HStack {
                 SwiftUI.Image(systemName: "bell.badge.fill")
                     .foregroundColor(.orange)
-                SwiftUI.Text("Lưu ý khi cài đặt Phím tắt cuối cùng")
+                SwiftUI.Text("Lưu ý khi cài đặt Phím tắt Tự động làm mới")
                     .font(.subheadline.bold())
             }
             
-            SwiftUI.Text("Để bật chế độ tự động chạy hằng ngày lúc 6h sáng, bạn cần vào ứng dụng **Phím tắt** ➔ bật mục **“Tự động hóa”** và thiết lập giống như 2 ảnh hướng dẫn dưới đây:")
+            SwiftUI.Text("Để bật chế độ tự động chạy hằng ngày lúc 6h sáng hoặc 3h chiều, bạn cần vào ứng dụng **Phím tắt** ➔ bật mục **“Tự động hóa”** và thiết lập giống như 2 ảnh hướng dẫn dưới đây:")
                 .font(.footnote)
                 .foregroundColor(.secondary)
             
@@ -526,24 +538,40 @@ struct RemoteGuideImageView: SwiftUI.View {
     }
 }
 
-// MARK: - 1. Trang Hướng Dẫn Pairing File
+// MARK: - 1. Trang Hướng Dẫn & Thao Tác Trực Tiếp Pairing File
 struct PairingGuideSheetView: SwiftUI.View {
-    let isPairingOK: Bool
-    let protocolName: String
+    @ObservedObject var vm: SystemCheckViewModel
+    @StateObject private var wirelessVM = WirelessPairViewModel()
+    @StateObject private var pairingMgmtVM = PairingFileManagementViewModel()
+    
+    @State private var showDeleteConfirm = false
+    @State private var statusBannerMessage: String? = nil
+    @State private var isExportSheetPresented = false
+    @State private var exportFileURL: URL? = nil
+    
     @Environment(\.dismiss) private var dismiss
+    
+    /// Đường dẫn file Pairing dùng để Xuất & Lưu vào Tệp (chỉ hiện sau khi Cài Pairing lên iPhone xong)
+    private var installedPairingURLForExport: URL? {
+        if let url = wirelessVM.shareSheetURL, FileManager.default.fileExists(atPath: url.path) {
+            return url
+        }
+        return nil
+    }
     
     var body: some SwiftUI.View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    // Trạng thái hiện tại
                     HStack(spacing: 12) {
-                        SwiftUI.Image(systemName: isPairingOK ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        SwiftUI.Image(systemName: vm.isPairingOK ? "checkmark.circle.fill" : "xmark.circle.fill")
                             .font(.title)
-                            .foregroundColor(isPairingOK ? .green : .red)
+                            .foregroundColor(vm.isPairingOK ? .green : .red)
                         VStack(alignment: .leading, spacing: 2) {
-                            SwiftUI.Text(isPairingOK ? "Pairing File Đang Ổn Định" : "Pairing File Chưa Ổn Định")
+                            SwiftUI.Text(vm.isPairingOK ? "Pairing File Đang Ổn Định" : "Pairing File Chưa Ổn Định")
                                 .font(.headline)
-                            SwiftUI.Text("Trạng thái: \(protocolName)")
+                            SwiftUI.Text("Trạng thái: \(vm.pairingProtocol)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -553,17 +581,161 @@ struct PairingGuideSheetView: SwiftUI.View {
                     .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
                     .cornerRadius(14)
                     
-                    // Hướng dẫn iOS 27
+                    // Thông báo phản hồi nhanh khi Nhập / Xoá / Cài xong
+                    if let banner = statusBannerMessage {
+                        HStack(spacing: 10) {
+                            SwiftUI.Image(systemName: "info.circle.fill")
+                                .foregroundColor(.blue)
+                            SwiftUI.Text(banner)
+                                .font(.footnote.bold())
+                                .foregroundColor(.primary)
+                            Spacer()
+                        }
+                        .padding(12)
+                        .background(SwiftUI.Color.blue.opacity(0.12))
+                        .cornerRadius(12)
+                    }
+                    
+                    // KHU VỰC QUẢN LÝ TỆP PAIRING NHANH (Nhập & Xoá)
                     VStack(alignment: .leading, spacing: 12) {
+                        SwiftUI.Label("Quản lý tệp Pairing nhanh", systemImage: "folder.Fill.badge.gearshape")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                        
+                        HStack(spacing: 12) {
+                            // Nút Nhập tệp Pairing
+                            SwiftUI.Button {
+                                pairingMgmtVM.promptImport(for: .rppairing)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    SwiftUI.Image(systemName: "square.and.arrow.down.fill")
+                                    SwiftUI.Text("Nhập tệp Pairing")
+                                        .font(.subheadline.bold())
+                                }
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                                .background(SwiftUI.Color.blue)
+                                .cornerRadius(12)
+                            }
+                            
+                            // Nút Xoá tệp Pairing hiện tại
+                            SwiftUI.Button {
+                                showDeleteConfirm = true
+                            } label: {
+                                HStack(spacing: 8) {
+                                    SwiftUI.Image(systemName: "trash.fill")
+                                    SwiftUI.Text("Xoá tệp Pairing")
+                                        .font(.subheadline.bold())
+                                }
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                                .background(SwiftUI.Color.red)
+                                .cornerRadius(12)
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
+                    .cornerRadius(16)
+                    
+                    // HƯỚNG DẪN & NÚT CÀI PAIRING TRỰC TIẾP TRÊN iOS 27
+                    VStack(alignment: .leading, spacing: 14) {
                         SwiftUI.Label("Dành cho iOS 27 (Ghép nối trực tiếp không cần PC)", systemImage: "iphone.radiowaves.left.and.right")
                             .font(.headline)
                             .foregroundColor(.blue)
                         
-                        GuideStepRow(num: "1", text: "Mở **SideStore** ➔ vào tab **Cài đặt (Settings)** ➔ chọn **Pairing File Management** ➔ **Wireless Pairing** ➔ nhấn nút **Start Pairing Server**.")
+                        GuideStepRow(num: "1", text: "Nhấn trực tiếp nút **“Cài Pairing lên iPhone”** ngay bên dưới để khởi chạy máy chủ ghép nối.")
                         GuideStepRow(num: "2", text: "Mở ứng dụng **Cài đặt** của iPhone ➔ **Quyền riêng tư & Bảo mật** ➔ **Chế độ nhà phát triển (Developer Mode)**.")
                         GuideStepRow(num: "3", text: "Kiểm tra danh sách thiết bị đã ghép nối: nếu có thiết bị nào đã ghép nối từ trước thì **xoá hết đi**, sau đó nhấn chọn **Pair with SideStore** và nhập mật khẩu mở máy.")
-                        GuideStepRow(num: "4", text: "Quay lại ứng dụng **SideStore**, ghi nhớ **6 chữ số** hiện lên trên màn hình, rồi chuyển lại qua ứng dụng **Cài đặt** để nhập 6 số đó vào.")
-                        GuideStepRow(num: "5", text: "Khi ghép nối xong, quay lại **SideStore** sẽ hiện bảng lưu tệp. Bạn hãy chọn **Lưu vào Tệp (Files)** ở vị trí dễ nhớ để dành khi cần dùng lại sau này.")
+                        GuideStepRow(num: "4", text: "Quay lại màn hình này, ghi nhớ **6 chữ số** hiện lên bên dưới, rồi chuyển lại qua ứng dụng **Cài đặt** để nhập 6 số đó vào.")
+                        GuideStepRow(num: "5", text: "Khi cài xong Pairing lên iPhone, nút **“Xuất và lưu file Pairing vào Tệp”** sẽ xuất hiện bên dưới để bạn lưu lại dùng về sau.")
+                        
+                        Divider().padding(.vertical, 4)
+                        
+                        // Trạng thái trực tiếp của Wireless Pairing Server
+                        VStack(spacing: 12) {
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(wirelessVM.isAdvertising ? SwiftUI.Color.green : SwiftUI.Color.secondary.opacity(0.4))
+                                    .frame(width: 10, height: 10)
+                                SwiftUI.Text(wirelessVM.statusText)
+                                    .font(.subheadline.bold())
+                                Spacer()
+                            }
+                            
+                            SwiftUI.Text(wirelessVM.subStatusText)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            
+                            // Hiển thị ngay mã PIN 6 số tại đây nếu iPhone yêu cầu
+                            if let pin = wirelessVM.pinCode {
+                                VStack(spacing: 8) {
+                                    SwiftUI.Text("MÃ GHÉP NỐI 6 CHỮ SỐ CỦA BẠN:")
+                                        .font(.caption.bold())
+                                        .foregroundColor(.blue)
+                                    SwiftUI.Text(pin)
+                                        .font(.system(size: 32, weight: .heavy, design: .monospaced))
+                                        .tracking(6)
+                                        .foregroundColor(.primary)
+                                        .padding(.vertical, 8)
+                                        .padding(.horizontal, 20)
+                                        .background(RoundedRectangle(cornerRadius: 12).fill(SwiftUI.Color.blue.opacity(0.12)))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 4)
+                            }
+                            
+                            if let errorMsg = wirelessVM.errorMessage {
+                                SwiftUI.Text(errorMsg)
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            
+                            // Nút 1: Cài Pairing lên iPhone (Start / Stop Pairing Server)
+                            SwiftUI.Button {
+                                wirelessVM.togglePairing()
+                            } label: {
+                                HStack(spacing: 10) {
+                                    SwiftUI.Image(systemName: wirelessVM.isAdvertising ? "stop.circle.fill" : "antenna.radiowaves.left.and.right")
+                                        .font(.system(size: 18, weight: .bold))
+                                    SwiftUI.Text(wirelessVM.isAdvertising ? "Dừng Cài Pairing (Stop Server)" : "Cài Pairing lên iPhone")
+                                        .font(.headline)
+                                }
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 50)
+                                .background(wirelessVM.isAdvertising ? SwiftUI.Color.red : SwiftUI.Color.accentColor)
+                                .cornerRadius(14)
+                            }
+                            
+                            // Nút 2: Xuất và lưu file Pairing vào Tệp (CHỈ HIỆN KHI ĐÃ CÀI XONG PAIRING LÊN IPHONE)
+                            if let pairedURL = installedPairingURLForExport {
+                                SwiftUI.Button {
+                                    exportFileURL = pairedURL
+                                    isExportSheetPresented = true
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        SwiftUI.Image(systemName: "square.and.arrow.up.fill")
+                                            .font(.system(size: 18, weight: .bold))
+                                        SwiftUI.Text("Xuất và lưu file Pairing vào Tệp")
+                                            .font(.headline)
+                                    }
+                                    .foregroundColor(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 50)
+                                    .background(SwiftUI.Color.green)
+                                    .cornerRadius(14)
+                                }
+                                .transition(.scale.combined(with: .opacity))
+                            }
+                        }
+                        .padding(12)
+                        .background(SwiftUI.Color(UIColor.tertiarySystemGroupedBackground))
+                        .cornerRadius(14)
                     }
                     .padding()
                     .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
@@ -579,7 +751,7 @@ struct PairingGuideSheetView: SwiftUI.View {
                         GuideStepRow(num: "2", text: "Cắm cáp kết nối iPhone vào máy tính, mở khóa màn hình iPhone và nhấn **Tin cậy (Trust)** máy tính này.")
                         GuideStepRow(num: "3", text: "Trên giao diện **iLoader**, chọn thiết bị của bạn rồi nhấn nút tạo **Pairing File** (hoặc gửi trực tiếp vào SideStore).")
                         GuideStepRow(num: "4", text: "Nếu lưu thành file trên máy tính, hãy chuyển file đó sang iPhone và lưu vào ứng dụng **Tệp (Files)**.")
-                        GuideStepRow(num: "5", text: "Mở **SideStore** ➔ **Cài đặt** ➔ **Pairing File Management** ➔ nhấn Import để chọn file vừa lưu là hoàn tất.")
+                        GuideStepRow(num: "5", text: "Nhấn nút **“Nhập tệp Pairing”** màu xanh ở ngay đầu trang này để chọn file vừa lưu là hoàn tất.")
                     }
                     .padding()
                     .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
@@ -588,9 +760,79 @@ struct PairingGuideSheetView: SwiftUI.View {
                 .padding()
             }
             .background(SwiftUI.Color(UIColor.systemGroupedBackground))
-            .navigationTitle("Hướng Dẫn Pairing File")
+            .navigationTitle("Hướng Dẫn & Cài Pairing")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(trailing: SwiftUI.Button("Xong") { dismiss() })
+            #if !os(tvOS)
+            .fileImporter(
+                isPresented: $pairingMgmtVM.showFileImporter,
+                allowedContentTypes: pairingMgmtVM.allowedPairingTypes
+            ) { result in
+                pairingMgmtVM.handleImportResult(result)
+                Task { @MainActor in
+                    if let proto = PairingFileManager.shared.persistedActiveProtocol ?? PairingFileManager.shared.preferredProtocol {
+                        try? await minimuxerSwitchPairingProtocol(to: proto)
+                    } else {
+                        try? await ensureMinimuxerStarted()
+                    }
+                    await vm.checkAllStatuses()
+                    statusBannerMessage = "Đã nhập tệp Pairing thành công!"
+                }
+            }
+            #endif
+            .alert("Xoá tệp Pairing hiện tại?", isPresented: $showDeleteConfirm) {
+                SwiftUI.Button("Xoá tất cả tệp Pairing", role: .destructive) {
+                    PairingFileManager.shared.resetAllPairingFiles()
+                    wirelessVM.shareSheetURL = nil
+                    wirelessVM.pairedDevice = nil
+                    statusBannerMessage = "Đã xoá toàn bộ tệp Pairing hiện tại."
+                    Task { @MainActor in
+                        await vm.checkAllStatuses()
+                    }
+                }
+                SwiftUI.Button("Huỷ", role: .cancel) { }
+            } message: {
+                SwiftUI.Text("Thao tác này sẽ xoá toàn bộ tệp Pairing đang lưu trong SideStore (gồm cả Lockdown và Remote Pairing).")
+            }
+            .sheet(isPresented: Binding(
+                get: { wirelessVM.pinCode != nil },
+                set: { if !$0 { wirelessVM.pinCode = nil } }
+            )) {
+                if let pin = wirelessVM.pinCode {
+                    if #available(iOS 16.0, tvOS 16.0, *) {
+                        WirelessPairPinDialog(pin: pin) {
+                            wirelessVM.pinCode = nil
+                        }
+                        .presentationDetents([.fraction(0.45), .medium])
+                        .presentationDragIndicator(.visible)
+                    } else {
+                        WirelessPairPinDialog(pin: pin) {
+                            wirelessVM.pinCode = nil
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $wirelessVM.isShareSheetPresented) {
+                if let fileURL = wirelessVM.shareSheetURL {
+                    ActivityViewController(activityItems: [fileURL])
+                }
+            }
+            .sheet(isPresented: $isExportSheetPresented) {
+                if let fileURL = exportFileURL {
+                    ActivityViewController(activityItems: [fileURL])
+                }
+            }
+            .onChange(of: wirelessVM.pairedDevice != nil) { isPaired in
+                if isPaired, let pairedURL = wirelessVM.shareSheetURL {
+                    // Tự động nạp file vừa ghép nối vào PairingFileManager và kích hoạt ngay lập tức
+                    try? PairingFileManager.shared.importPairingFile(from: pairedURL, preferred: .rppairing)
+                    Task { @MainActor in
+                        try? await minimuxerSwitchPairingProtocol(to: .rppairing)
+                        await vm.checkAllStatuses()
+                        statusBannerMessage = "Đã cài Pairing lên iPhone thành công! Bạn có thể nhấn nút màu xanh lá bên dưới để lưu file vào Tệp."
+                    }
+                }
+            }
         }
     }
 }
@@ -766,7 +1008,7 @@ struct CellularDetailSheetView: SwiftUI.View {
                             .font(.headline)
                             .foregroundColor(.green)
                         
-                        SwiftUI.Text("• **Không cần Wi-Fi:** SideStore phiên bản này cho phép bạn cài đặt IPA và làm mới (Refresh) ứng dụng trực tiếp bằng mạng **4G/5G kết hợp LocalDevVPN**.\n\n• **Trạng thái Internet:** \(hasInternet ? "Đang kết nối Internet tốt ✅" : "Chưa có kết nối Internet ❌").\n\n• **Tự động hóa hoàn toàn:** Hãy tải 3 phím tắt ở trang Check và bật Tự động hóa lúc 6h sáng để máy tự động bật 4G + VPN và gia hạn ứng dụng mỗi ngày.")
+                        SwiftUI.Text("• **Không cần Wi-Fi:** SideStore phiên bản này cho phép bạn cài đặt IPA và làm mới (Refresh) ứng dụng trực tiếp bằng mạng **4G/5G kết hợp LocalDevVPN**.\n\n• **Trạng thái Internet:** \(hasInternet ? "Đang kết nối Internet tốt ✅" : "Chưa có kết nối Internet ❌").\n\n• **Tự động hóa hoàn toàn:** Hãy tải các phím tắt ở trang Check và bật Tự động hóa lúc 6h sáng hoặc 3h chiều để máy tự động bật 4G + VPN và gia hạn ứng dụng mỗi ngày.")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
