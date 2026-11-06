@@ -1,3 +1,4 @@
+
 //
 //  NewsViewController.swift
 //  AltStore
@@ -63,6 +64,7 @@ final class SystemCheckViewModel: ObservableObject {
     
     @Published var isAnisetteOK: Bool = !UserDefaults.standard.useOnDeviceAnisette
     @Published var useOnDeviceAnisette: Bool = UserDefaults.standard.useOnDeviceAnisette
+    @Published var selectedAnisetteServerURL: String = UserDefaults.standard.anisetteServer
     @Published var anisetteDetail: String = "Đang kiểm tra..."
     
     private let pathMonitor = NWPathMonitor()
@@ -219,6 +221,16 @@ final class SystemCheckViewModel: ObservableObject {
         updateInstantStatus()
     }
     
+    func selectAnisetteServerURL(_ urlString: String) {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        UserDefaults.standard.anisetteServer = trimmed
+        if UserDefaults.standard.useOnDeviceAnisette {
+            UserDefaults.standard.useOnDeviceAnisette = false
+        }
+        updateInstantStatus()
+    }
+    
     func updateInstantStatus() {
         let snapshot = Self.scanSystemInterfaces()
         
@@ -293,7 +305,8 @@ final class SystemCheckViewModel: ObservableObject {
         self.useOnDeviceAnisette = onDevice
         self.isAnisetteOK = !onDevice
         
-        let selectedURL = UserDefaults.standard.selectedAnisetteURL
+        let selectedURL = UserDefaults.standard.anisetteServer
+        self.selectedAnisetteServerURL = selectedURL
         let serverHost = URL(string: selectedURL)?.host ?? selectedURL
         self.anisetteDetail = onDevice
             ? "Chưa ổn định • Hãy tắt Use On-Device Anisette"
@@ -1188,9 +1201,80 @@ struct CellularDetailSheetView: SwiftUI.View {
     }
 }
 
+struct AnisetteServerOption: Identifiable, Hashable, Sendable {
+    var id: String { url }
+    let name: String
+    let url: String
+}
+
+@MainActor
+final class AnisetteQuickListViewModel: ObservableObject {
+    @Published var servers: [AnisetteServerOption] = []
+    @Published var isLoading: Bool = false
+    
+    private struct RemoteServerListResponse: Decodable {
+        struct Entry: Decodable {
+            let name: String
+            let address: String
+        }
+        let servers: [Entry]
+    }
+    
+    private static let fallbackServers: [AnisetteServerOption] = [
+        AnisetteServerOption(name: "SideStore Official (Macley)", url: "https://ani.sidestore.io"),
+        AnisetteServerOption(name: "SideStore Public Server (nythepegasus)", url: "https://anisette.nythepegasus.com"),
+        AnisetteServerOption(name: "SideStore Community v3", url: "https://ani.LV8.org")
+    ]
+    
+    init() {
+        reloadLocalList()
+    }
+    
+    func reloadLocalList() {
+        var result: [AnisetteServerOption] = Self.fallbackServers
+        let current = UserDefaults.standard.anisetteServer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !current.isEmpty && !result.contains(where: { $0.url.caseInsensitiveCompare(current) == .orderedSame }) {
+            let host = URL(string: current)?.host ?? current
+            result.insert(AnisetteServerOption(name: "Máy chủ tùy chỉnh (\(host))", url: current), at: 0)
+        }
+        self.servers = result
+    }
+    
+    func fetchPublicServers() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        
+        guard let listURL = URL(string: "https://raw.githubusercontent.com/SideStore/anisette-servers/main/servers.json") else {
+            reloadLocalList()
+            return
+        }
+        
+        do {
+            let (data, _) = try await URLSession.shared.data(from: listURL)
+            let decoded = try JSONDecoder().decode(RemoteServerListResponse.self, from: data)
+            var merged: [AnisetteServerOption] = decoded.servers.map {
+                AnisetteServerOption(name: $0.name, url: $0.address)
+            }
+            for fallback in Self.fallbackServers where !merged.contains(where: { $0.url.caseInsensitiveCompare(fallback.url) == .orderedSame }) {
+                merged.append(fallback)
+            }
+            let current = UserDefaults.standard.anisetteServer.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !current.isEmpty && !merged.contains(where: { $0.url.caseInsensitiveCompare(current) == .orderedSame }) {
+                let host = URL(string: current)?.host ?? current
+                merged.insert(AnisetteServerOption(name: "Máy chủ tùy chỉnh (\(host))", url: current), at: 0)
+            }
+            self.servers = merged
+        } catch {
+            reloadLocalList()
+        }
+    }
+}
+
 struct AnisetteDetailSheetView: SwiftUI.View {
     @ObservedObject var vm: SystemCheckViewModel
-    @ObservedObject private var serversManager = AnisetteServersManager.shared
+    @StateObject private var listVM = AnisetteQuickListViewModel()
+    @State private var customServerInput: String = ""
     @Environment(\.dismiss) private var dismiss
     
     var body: some SwiftUI.View {
@@ -1266,11 +1350,11 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                                 .font(.headline)
                                 .foregroundColor(.primary)
                             Spacer()
-                            if serversManager.isLoadingPublicServers {
+                            if listVM.isLoading {
                                 ProgressView()
                             } else {
                                 SwiftUI.Button {
-                                    Task { await serversManager.refreshPublicServers(force: true) }
+                                    Task { await listVM.fetchPublicServers() }
                                 } label: {
                                     SwiftUI.Label("Làm mới", systemImage: "arrow.clockwise")
                                         .font(.caption.bold())
@@ -1283,15 +1367,11 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                             .foregroundColor(.secondary)
                         
                         VStack(spacing: 8) {
-                            ForEach(serversManager.allServers) { server in
-                                let isSelected = (serversManager.selectedServerURL == server.url)
+                            ForEach(listVM.servers) { server in
+                                let isSelected = (vm.selectedAnisetteServerURL.caseInsensitiveCompare(server.url) == .orderedSame)
                                 SwiftUI.Button {
-                                    serversManager.selectServer(server)
-                                    if vm.useOnDeviceAnisette {
-                                        vm.setUseOnDeviceAnisette(false)
-                                    } else {
-                                        vm.updateInstantStatus()
-                                    }
+                                    vm.selectAnisetteServerURL(server.url)
+                                    listVM.reloadLocalList()
                                 } label: {
                                     HStack(spacing: 12) {
                                         SwiftUI.Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
@@ -1326,21 +1406,39 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                             }
                         }
                         
-                        NavigationLink(destination: AnisetteServersView()) {
-                            HStack {
-                                SwiftUI.Image(systemName: "slider.horizontal.3")
-                                SwiftUI.Text("Quản lý / Thêm máy chủ Anisette tùy chỉnh...")
-                                    .font(.subheadline.bold())
-                                Spacer()
-                                SwiftUI.Image(systemName: "chevron.right")
-                                    .font(.caption.bold())
+                        Divider().padding(.vertical, 4)
+                        
+                        VStack(alignment: .leading, spacing: 8) {
+                            SwiftUI.Text("Nhập URL Máy chủ Anisette tùy chỉnh:")
+                                .font(.caption.bold())
+                                .foregroundColor(.secondary)
+                            
+                            HStack(spacing: 8) {
+                                TextField("https://ani.sidestore.io", text: $customServerInput)
+                                    .keyboardType(.URL)
+                                    .autocapitalization(.none)
+                                    .disableAutocorrection(true)
+                                    .padding(10)
+                                    .background(SwiftUI.Color(UIColor.tertiarySystemGroupedBackground))
+                                    .cornerRadius(10)
+                                
+                                SwiftUI.Button {
+                                    let trimmed = customServerInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    guard !trimmed.isEmpty else { return }
+                                    vm.selectAnisetteServerURL(trimmed)
+                                    listVM.reloadLocalList()
+                                    customServerInput = ""
+                                } label: {
+                                    SwiftUI.Text("Lưu")
+                                        .font(.subheadline.bold())
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 10)
+                                        .background(SwiftUI.Color.accentColor)
+                                        .cornerRadius(10)
+                                }
                             }
-                            .padding(12)
-                            .background(SwiftUI.Color.accentColor.opacity(0.12))
-                            .foregroundColor(.accentColor)
-                            .cornerRadius(12)
                         }
-                        .padding(.top, 4)
                     }
                     .padding()
                     .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
@@ -1353,8 +1451,8 @@ struct AnisetteDetailSheetView: SwiftUI.View {
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(trailing: SwiftUI.Button("Xong") { dismiss() })
             .task {
-                await serversManager.refreshPublicServers()
                 vm.updateInstantStatus()
+                await listVM.fetchPublicServers()
             }
         }
     }
