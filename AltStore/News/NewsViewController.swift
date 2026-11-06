@@ -13,6 +13,35 @@ import MinimuxerCommon
 import Combine
 import Darwin
 
+private enum AnisetteDefaultsHelper {
+    private static let candidateKeys = [
+        "textInputAnisetteURL",
+        "selectedAnisetteURL",
+        "anisetteServer",
+        "ALTAnisetteServer",
+        "customAnisetteURL"
+    ]
+    
+    static var currentServerURL: String {
+        for key in candidateKeys {
+            if let value = UserDefaults.standard.string(forKey: key)?
+                .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+        return "https://ani.sidestore.io"
+    }
+    
+    static func setServerURL(_ url: String) {
+        let trimmed = url.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        for key in candidateKeys {
+            UserDefaults.standard.set(trimmed, forKey: key)
+        }
+    }
+}
+
 class NewsViewController: UICollectionViewController {
     var source: Source?
     
@@ -64,7 +93,7 @@ final class SystemCheckViewModel: ObservableObject {
     
     @Published var isAnisetteOK: Bool = !UserDefaults.standard.useOnDeviceAnisette
     @Published var useOnDeviceAnisette: Bool = UserDefaults.standard.useOnDeviceAnisette
-    @Published var selectedAnisetteServerURL: String = UserDefaults.standard.anisetteServer
+    @Published var selectedAnisetteServerURL: String = AnisetteDefaultsHelper.currentServerURL
     @Published var anisetteDetail: String = "Đang kiểm tra..."
     
     private let pathMonitor = NWPathMonitor()
@@ -222,9 +251,9 @@ final class SystemCheckViewModel: ObservableObject {
     }
     
     func selectAnisetteServerURL(_ urlString: String) {
-        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = urlString.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        UserDefaults.standard.anisetteServer = trimmed
+        AnisetteDefaultsHelper.setServerURL(trimmed)
         if UserDefaults.standard.useOnDeviceAnisette {
             UserDefaults.standard.useOnDeviceAnisette = false
         }
@@ -305,7 +334,7 @@ final class SystemCheckViewModel: ObservableObject {
         self.useOnDeviceAnisette = onDevice
         self.isAnisetteOK = !onDevice
         
-        let selectedURL = UserDefaults.standard.anisetteServer
+        let selectedURL = AnisetteDefaultsHelper.currentServerURL
         self.selectedAnisetteServerURL = selectedURL
         let serverHost = URL(string: selectedURL)?.host ?? selectedURL
         self.anisetteDetail = onDevice
@@ -1232,7 +1261,7 @@ final class AnisetteQuickListViewModel: ObservableObject {
     
     func reloadLocalList() {
         var result: [AnisetteServerOption] = Self.fallbackServers
-        let current = UserDefaults.standard.anisetteServer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let current = AnisetteDefaultsHelper.currentServerURL.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         if !current.isEmpty && !result.contains(where: { $0.url.caseInsensitiveCompare(current) == .orderedSame }) {
             let host = URL(string: current)?.host ?? current
             result.insert(AnisetteServerOption(name: "Máy chủ tùy chỉnh (\(host))", url: current), at: 0)
@@ -1259,7 +1288,7 @@ final class AnisetteQuickListViewModel: ObservableObject {
             for fallback in Self.fallbackServers where !merged.contains(where: { $0.url.caseInsensitiveCompare(fallback.url) == .orderedSame }) {
                 merged.append(fallback)
             }
-            let current = UserDefaults.standard.anisetteServer.trimmingCharacters(in: .whitespacesAndNewlines)
+            let current = AnisetteDefaultsHelper.currentServerURL.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             if !current.isEmpty && !merged.contains(where: { $0.url.caseInsensitiveCompare(current) == .orderedSame }) {
                 let host = URL(string: current)?.host ?? current
                 merged.insert(AnisetteServerOption(name: "Máy chủ tùy chỉnh (\(host))", url: current), at: 0)
@@ -1423,7 +1452,7 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                                     .cornerRadius(10)
                                 
                                 SwiftUI.Button {
-                                    let trimmed = customServerInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    let trimmed = customServerInput.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                                     guard !trimmed.isEmpty else { return }
                                     vm.selectAnisetteServerURL(trimmed)
                                     listVM.reloadLocalList()
@@ -1439,6 +1468,22 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                                 }
                             }
                         }
+                        
+                        NavigationLink(destination: AnisetteServersView()) {
+                            HStack {
+                                SwiftUI.Image(systemName: "slider.horizontal.3")
+                                SwiftUI.Text("Mở trình quản lý Anisette gốc của SideStore...")
+                                    .font(.subheadline.bold())
+                                Spacer()
+                                SwiftUI.Image(systemName: "chevron.right")
+                                    .font(.caption.bold())
+                            }
+                            .padding(12)
+                            .background(SwiftUI.Color.accentColor.opacity(0.12))
+                            .foregroundColor(.accentColor)
+                            .cornerRadius(12)
+                        }
+                        .padding(.top, 4)
                     }
                     .padding()
                     .background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground))
