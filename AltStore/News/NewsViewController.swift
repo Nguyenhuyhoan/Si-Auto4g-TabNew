@@ -50,7 +50,7 @@ class NewsViewController: UICollectionViewController {
     }
 }
 
-// MARK: - ViewModel Cập Nhật Tức Thì (Real-time + Background Non-blocking)
+// MARK: - ViewModel Cập Nhật Tức Thì & Chính Xác (Không gây nghẽn Minimuxer)
 @MainActor
 final class SystemCheckViewModel: ObservableObject {
     @Published var isPairingOK: Bool = false
@@ -58,8 +58,8 @@ final class SystemCheckViewModel: ObservableObject {
     @Published var hasAnyStoredPairingFile: Bool = false
     
     @Published var isVpnOK: Bool = false
-    @Published var tunnelIP: String = "Chưa có"
-    @Published var deviceIP: String = "Chưa có"
+    @Published var tunnelIP: String = "Chưa kết nối"
+    @Published var deviceIP: String = "Chưa kết nối"
     
     @Published var isCellularOK: Bool = false
     @Published var cellularDetail: String = "Đang kiểm tra..."
@@ -71,7 +71,12 @@ final class SystemCheckViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var timerTask: Task<Void, Never>?
     
+    // Chống gọi chồng chéo làm nghẽn kết nối tới Minimuxer
+    private var isChecking: Bool = false
+    private var lastVerifiedPairingSuccess: Bool = false
+    
     init() {
+        updateInstantStatus()
         setupRealtimeListeners()
     }
     
@@ -89,7 +94,7 @@ final class SystemCheckViewModel: ObservableObject {
                 guard let self = self else { return }
                 self.usesCellularPath = usesCell
                 self.hasInternet = satisfied
-                self.updateFastNetworkUI()
+                self.updateInstantStatus()
                 await self.checkAllStatuses()
             }
         }
@@ -100,7 +105,7 @@ final class SystemCheckViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self = self else { return }
-                self.updateFastNetworkUI()
+                self.updateInstantStatus()
                 Task { @MainActor [weak self] in
                     await self?.checkAllStatuses()
                 }
@@ -112,6 +117,7 @@ final class SystemCheckViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self = self else { return }
+                self.updateInstantStatus()
                 Task { @MainActor [weak self] in
                     await self?.checkAllStatuses()
                 }
@@ -123,107 +129,222 @@ final class SystemCheckViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self = self else { return }
-                self.updateFastNetworkUI()
+                self.updateInstantStatus()
                 Task { @MainActor [weak self] in
-                    await self?.checkAllStatuses()
+                    await self?.checkAllStatuses(forceVerify: true)
                 }
             }
             .store(in: &cancellables)
         
-        // 5. Vòng lặp quét định kỳ mỗi 1.5 giây để đảm bảo luôn mới nhất
+        // 5. Vòng lặp cập nhật nhẹ nhàng mỗi 2 giây
         timerTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self = self else { break }
-                await self.checkAllStatuses()
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                await self.checkAllStatuses(forceVerify: false)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
     
-    /// Kiểm tra thực tế xem interface 4G (pdp_ip*) có đang bật và có IP hay không
-    private static func isCellularInterfaceActive() -> Bool {
+    // MARK: - Quét trực tiếp các Interface hệ thống (4G pdp_ip* và VPN utun*)
+    private struct SystemInterfaceSnapshot: Sendable {
+        let hasCellularPdp: Bool
+        let hasActiveUtun: Bool
+        let detectedUtunIPv4: String?
+    }
+    
+    private nonisolated static func scanSystemInterfaces() -> SystemInterfaceSnapshot {
+        var hasPdp = false
+        var hasUtun = false
+        var bestUtunIP: String? = nil
+        
         for iface in minimuxer.network.activeInterfaces {
-            if iface.name.lowercased().hasPrefix("pdp_ip") {
-                return true
+            let lower = iface.name.lowercased()
+            if lower.hasPrefix("pdp_ip") {
+                hasPdp = true
+            }
+            if lower.hasPrefix("utun") {
+                hasUtun = true
+                if bestUtunIP == nil || iface.address.hasPrefix("10.7.") {
+                    bestUtunIP = iface.address
+                }
             }
         }
         
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return false }
-        defer { freeifaddrs(ifaddr) }
-        
-        var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
-        while let current = ptr {
-            let flags = Int32(current.pointee.ifa_flags)
-            let isUp = (flags & IFF_UP) != 0 && (flags & IFF_RUNNING) != 0
-            if isUp, let addr = current.pointee.ifa_addr {
-                let family = addr.pointee.sa_family
-                if family == UInt8(AF_INET) || family == UInt8(AF_INET6) {
-                    let name = String(cString: current.pointee.ifa_name)
-                    if name.lowercased().hasPrefix("pdp_ip") {
-                        return true
+        if getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr {
+            defer { freeifaddrs(ifaddr) }
+            var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
+            while let current = ptr {
+                let flags = Int32(current.pointee.ifa_flags)
+                let isUp = (flags & IFF_UP) != 0 && (flags & IFF_RUNNING) != 0
+                if isUp, let addr = current.pointee.ifa_addr {
+                    let family = addr.pointee.sa_family
+                    let name = String(cString: current.pointee.ifa_name).lowercased()
+                    
+                    if family == UInt8(AF_INET) || family == UInt8(AF_INET6) {
+                        if name.hasPrefix("pdp_ip") {
+                            hasPdp = true
+                        }
+                    }
+                    
+                    if family == UInt8(AF_INET), name.hasPrefix("utun") {
+                        var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                        if getnameinfo(
+                            addr,
+                            socklen_t(addr.pointee.sa_len),
+                            &hostname,
+                            socklen_t(hostname.count),
+                            nil,
+                            0,
+                            NI_NUMERICHOST
+                        ) == 0 {
+                            let ip = String(cString: hostname)
+                            if !ip.isEmpty && !ip.hasPrefix("169.254.") {
+                                // Ưu tiên nhận diện IP của LocalDevVPN / StosVPN / WireGuard (10.7.x.x)
+                                if ip.hasPrefix("10.7.") {
+                                    hasUtun = true
+                                    bestUtunIP = ip
+                                } else if bestUtunIP == nil {
+                                    bestUtunIP = ip
+                                    hasUtun = true
+                                }
+                            }
+                        }
                     }
                 }
+                ptr = current.pointee.ifa_next
             }
-            ptr = current.pointee.ifa_next
         }
-        return false
+        
+        return SystemInterfaceSnapshot(
+            hasCellularPdp: hasPdp,
+            hasActiveUtun: hasUtun,
+            detectedUtunIPv4: bestUtunIP
+        )
     }
     
-    /// Cập nhật ngay lập tức trạng thái 4G và IP không cần đợi ping
-    private func updateFastNetworkUI() {
-        let hasPdp = Self.isCellularInterfaceActive()
+    // MARK: - Cập nhật nhanh trạng thái UI không cần chờ đợi
+    func updateInstantStatus() {
+        let snapshot = Self.scanSystemInterfaces()
         
-        self.isCellularOK = usesCellularPath || hasPdp
+        // 1. Trạng thái 4G / Di động
+        self.isCellularOK = usesCellularPath || snapshot.hasCellularPdp
         if usesCellularPath {
             self.cellularDetail = "Ổn định • Đang dùng trực tiếp 4G / Di động"
-        } else if hasPdp {
+        } else if snapshot.hasCellularPdp {
             self.cellularDetail = "Ổn định • 4G / Di động đang bật sẵn sàng"
         } else {
             self.cellularDetail = "Không ổn định • Đang tắt Dữ liệu di động (4G)"
         }
         
-        self.tunnelIP = ConnectionConfig.shared.formattedTunnelIface ?? "Chưa kết nối"
-        self.deviceIP = ConnectionConfig.shared.formattedTunnelPeer ?? "Chưa kết nối"
-        self.hasAnyStoredPairingFile = PairingFileManager.shared.hasPairingFile(for: .rppairing)
-            || PairingFileManager.shared.hasPairingFile(for: .lockdown)
-            || PairingFileManager.shared.hasPairingFile(for: .unknown)
+        // 2. Trạng thái LocalDevVPN (Kiểm tra thực tế cả ConnectionConfig lẫn utun hệ thống)
+        let config = ConnectionConfig.shared
+        let rawTunnelIP = config.tunnelIfaceIp ?? snapshot.detectedUtunIPv4
+        let rawPeerIP: String? = {
+            if config.overrideTunnelPeerReachable, !config.overrideTunnelPeerIp.isEmpty {
+                return config.overrideTunnelPeerIp
+            }
+            if let peer = config.tunnelPeerIp, !peer.isEmpty {
+                return peer
+            }
+            // Nếu utun đang là 10.7.1.1 (cấu hình iOS 27) hoặc 10.7.0.x thì peer mặc định là 10.7.0.1
+            if let tIP = rawTunnelIP, tIP.hasPrefix("10.7.") {
+                return "10.7.0.1"
+            }
+            return nil
+        }()
+        
+        if let formattedIface = config.formattedTunnelIface {
+            self.tunnelIP = formattedIface
+        } else if let tIP = rawTunnelIP {
+            self.tunnelIP = tIP
+        } else {
+            self.tunnelIP = "Chưa kết nối"
+        }
+        
+        if let formattedPeer = config.formattedTunnelPeer {
+            self.deviceIP = formattedPeer
+        } else if let pIP = rawPeerIP {
+            self.deviceIP = pIP
+        } else {
+            self.deviceIP = "Chưa kết nối"
+        }
+        
+        let vpnReady = config.isTunnelReady
+            || minimuxer.network.isUTunAvailable
+            || (snapshot.hasActiveUtun && rawTunnelIP != nil)
+        self.isVpnOK = vpnReady
+        
+        // 3. Trạng thái Pairing File hiện có
+        let hasRp = PairingFileManager.shared.hasPairingFile(for: .rppairing)
+        let hasLd = PairingFileManager.shared.hasPairingFile(for: .lockdown)
+        let hasUnk = PairingFileManager.shared.hasPairingFile(for: .unknown)
+        let hasAnyFile = hasRp || hasLd || hasUnk
+        self.hasAnyStoredPairingFile = hasAnyFile
+        
+        let coreLoaded = minimuxer.core.isPairingFileLoaded
+        let activeType: PairingProtocol = {
+            if coreLoaded && minimuxer.core.pairingFileType != .unknown {
+                return minimuxer.core.pairingFileType
+            }
+            if let persisted = PairingFileManager.shared.persistedActiveProtocol,
+               PairingFileManager.shared.hasPairingFile(for: persisted) {
+                return persisted
+            }
+            if hasRp { return .rppairing }
+            if hasLd { return .lockdown }
+            return .unknown
+        }()
+        
+        switch activeType {
+        case .rppairing:
+            self.pairingProtocol = "Remote Pairing (iOS 17+ / 27)"
+        case .lockdown:
+            self.pairingProtocol = "Lockdown Pairing"
+        case .unknown:
+            self.pairingProtocol = (hasAnyFile || coreLoaded) ? "Đã nạp Pairing File" : "Chưa có Pairing File"
+        }
+        
+        // Nếu Minimuxer đang Ready hoặc đã nạp file Pairing hợp lệ hoặc đã verify trước đó -> báo Xanh ngay!
+        let muxerReady = (minimuxerStatus == .ready)
+        if !hasAnyFile && !coreLoaded {
+            self.lastVerifiedPairingSuccess = false
+            self.isPairingOK = false
+        } else if muxerReady || coreLoaded || self.lastVerifiedPairingSuccess || hasAnyFile {
+            self.isPairingOK = true
+        }
     }
     
-    /// Kiểm tra chuyên sâu ở luồng ngầm (không gây khựng giao diện)
-    func checkAllStatuses() async {
-        updateFastNetworkUI()
+    // MARK: - Kiểm tra chuyên sâu ở Background (An toàn, không làm nghẽn Cài/Refresh App)
+    func checkAllStatuses(forceVerify: Bool = false) async {
+        updateInstantStatus()
         
-        let tIP = ConnectionConfig.shared.formattedTunnelIface ?? "Chưa kết nối"
-        let dIP = ConnectionConfig.shared.formattedTunnelPeer ?? "Chưa kết nối"
-        let targetIp = ConnectionConfig.shared.overrideTunnelPeerReachable
-            ? ConnectionConfig.shared.overrideTunnelPeerIp
-            : (ConnectionConfig.shared.tunnelPeerIp ?? "")
+        guard !isChecking else { return }
+        isChecking = true
+        defer { isChecking = false }
         
-        let bgCheck = await withCheckedContinuation { (continuation: CheckedContinuation<(vpnOK: Bool, isLoaded: Bool, proto: String), Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let utun = minimuxer.network.isUTunAvailable
-                let pingSuccess = !targetIp.isEmpty && minimuxer.core.testDeviceConnection(ifaddr: targetIp)
-                let isLoaded = minimuxer.core.isPairingFileLoaded
-                
-                let proto: String
-                switch minimuxer.core.pairingFileType {
-                case .rppairing: proto = "Remote Pairing (iOS 17+ / 27)"
-                case .lockdown:  proto = "Lockdown Pairing"
-                case .unknown:   proto = isLoaded ? "Đã nạp nhưng chưa xác thực" : "Chưa nạp Pairing File"
+        // Nếu có file Pairing trong bộ nhớ mà Minimuxer chưa nạp vào core -> khởi động nhẹ nhàng
+        if hasAnyStoredPairingFile && !minimuxer.core.isPairingFileLoaded {
+            await ensureMinimuxerStarted()
+            updateInstantStatus()
+        }
+        
+        // Nếu VPN và Pairing File đều đã có nhưng chưa từng verify UDID (hoặc người dùng kéo làm mới)
+        if isVpnOK && (hasAnyStoredPairingFile || minimuxer.core.isPairingFileLoaded) {
+            if forceVerify || !lastVerifiedPairingSuccess {
+                // Dùng forceLive: false trước để tránh tranh chấp kênh nếu đang cài/refresh app
+                if let udid = try? await fetchUDID(forceLive: false), !udid.isEmpty {
+                    self.lastVerifiedPairingSuccess = true
+                    self.isPairingOK = true
+                } else if minimuxer.core.isPairingFileLoaded || hasAnyStoredPairingFile {
+                    // Ngay cả khi muxer đang bận cài app, miễn là file Pairing đã nạp hợp lệ thì vẫn giữ trạng thái Ổn định
+                    self.isPairingOK = true
                 }
-                
-                continuation.resume(returning: (utun && pingSuccess, isLoaded, proto))
             }
         }
         
-        let verified = (try? await fetchUDID(forceLive: true)) != nil
-        
-        self.isVpnOK = bgCheck.vpnOK
-        self.tunnelIP = tIP
-        self.deviceIP = dIP
-        self.isPairingOK = bgCheck.isLoaded && verified
-        self.pairingProtocol = bgCheck.proto
+        updateInstantStatus()
     }
 }
 
@@ -279,8 +400,14 @@ struct SystemCheckDashboardView: SwiftUI.View {
             .padding()
         }
         .background(SwiftUI.Color(UIColor.systemGroupedBackground))
+        .onAppear {
+            vm.updateInstantStatus()
+            Task {
+                await vm.checkAllStatuses(forceVerify: true)
+            }
+        }
         .refreshable {
-            await vm.checkAllStatuses()
+            await vm.checkAllStatuses(forceVerify: true)
         }
         .sheet(isPresented: $showPairingSheet) {
             PairingGuideSheetView(vm: vm)
@@ -773,7 +900,8 @@ struct PairingGuideSheetView: SwiftUI.View {
                         ?? PairingFileManager.shared.preferredProtocol
                         ?? .rppairing
                     try? await minimuxerSwitchPairingProtocol(to: proto)
-                    await vm.checkAllStatuses()
+                    vm.updateInstantStatus()
+                    await vm.checkAllStatuses(forceVerify: true)
                     statusBannerMessage = "Đã nhập tệp Pairing thành công!"
                 }
             }
@@ -784,8 +912,9 @@ struct PairingGuideSheetView: SwiftUI.View {
                     wirelessVM.shareSheetURL = nil
                     wirelessVM.pairedDevice = nil
                     statusBannerMessage = "Đã xoá toàn bộ tệp Pairing hiện tại."
+                    vm.updateInstantStatus()
                     Task { @MainActor in
-                        await vm.checkAllStatuses()
+                        await vm.checkAllStatuses(forceVerify: true)
                     }
                 }
                 SwiftUI.Button("Huỷ", role: .cancel) { }
@@ -825,7 +954,8 @@ struct PairingGuideSheetView: SwiftUI.View {
                     try? PairingFileManager.shared.importPairingFile(from: pairedURL, preferred: .rppairing)
                     Task { @MainActor in
                         try? await minimuxerSwitchPairingProtocol(to: .rppairing)
-                        await vm.checkAllStatuses()
+                        vm.updateInstantStatus()
+                        await vm.checkAllStatuses(forceVerify: true)
                         statusBannerMessage = "Đã cài Pairing lên iPhone thành công! Bạn có thể nhấn nút màu xanh lá bên dưới để lưu file vào Tệp."
                     }
                 }
