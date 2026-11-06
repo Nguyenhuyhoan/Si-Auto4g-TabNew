@@ -14,31 +14,37 @@ import Combine
 import Darwin
 
 private enum AnisetteDefaultsHelper {
-    private static let candidateKeys = [
-        "textInputAnisetteURL",
-        "selectedAnisetteURL",
-        "anisetteServer",
-        "ALTAnisetteServer",
-        "customAnisetteURL"
-    ]
-    
     static var currentServerURL: String {
-        for key in candidateKeys {
-            if let value = UserDefaults.standard.string(forKey: key)?
-                .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
-               !value.isEmpty {
-                return value
-            }
+        let menuURL = UserDefaults.standard.menuAnisetteURL.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        if !menuURL.isEmpty {
+            return menuURL
         }
-        return "https://ani.sidestore.io"
+        if let textInput = UserDefaults.standard.textInputAnisetteURL?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
+           !textInput.isEmpty {
+            return textInput
+        }
+        if let custom = UserDefaults.standard.customAnisetteURL?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
+           !custom.isEmpty {
+            return custom
+        }
+        return AppConstants.Anisette.Servers.defaultServerURL
     }
     
-    static func setServerURL(_ url: String) {
+    static func selectServerFromList(_ url: String) {
         let trimmed = url.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        for key in candidateKeys {
-            UserDefaults.standard.set(trimmed, forKey: key)
-        }
+        UserDefaults.standard.textServer = false
+        UserDefaults.standard.menuAnisetteURL = trimmed
+        UserDefaults.standard.textInputAnisetteURL = trimmed
+        UserDefaults.standard.customAnisetteURL = trimmed
+    }
+    
+    static func setCustomServerURL(_ url: String) {
+        let trimmed = url.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        UserDefaults.standard.menuAnisetteURL = trimmed
+        UserDefaults.standard.textInputAnisetteURL = trimmed
+        UserDefaults.standard.customAnisetteURL = trimmed
     }
 }
 
@@ -250,10 +256,12 @@ final class SystemCheckViewModel: ObservableObject {
         updateInstantStatus()
     }
     
-    func selectAnisetteServerURL(_ urlString: String) {
-        let trimmed = urlString.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        AnisetteDefaultsHelper.setServerURL(trimmed)
+    func selectAnisetteServerURL(_ urlString: String, isCustom: Bool = false) {
+        if isCustom {
+            AnisetteDefaultsHelper.setCustomServerURL(urlString)
+        } else {
+            AnisetteDefaultsHelper.selectServerFromList(urlString)
+        }
         if UserDefaults.standard.useOnDeviceAnisette {
             UserDefaults.standard.useOnDeviceAnisette = false
         }
@@ -1230,73 +1238,56 @@ struct CellularDetailSheetView: SwiftUI.View {
     }
 }
 
-struct AnisetteServerOption: Identifiable, Hashable, Sendable {
-    var id: String { url }
-    let name: String
-    let url: String
-}
-
 @MainActor
 final class AnisetteQuickListViewModel: ObservableObject {
-    @Published var servers: [AnisetteServerOption] = []
+    @Published var servers: [AnisetteServerItem] = []
     @Published var isLoading: Bool = false
     
-    private struct RemoteServerListResponse: Decodable {
-        struct Entry: Decodable {
-            let name: String
-            let address: String
+    func loadCachedAndSync() async {
+        let local = await AnisetteServersManager.shared.loadLocalServers().filter { !$0.isHidden }
+        if !local.isEmpty {
+            self.servers = mergeWithCurrent(local)
         }
-        let servers: [Entry]
+        await refreshFromRemote()
     }
     
-    private static let fallbackServers: [AnisetteServerOption] = [
-        AnisetteServerOption(name: "SideStore Official (Macley)", url: "https://ani.sidestore.io"),
-        AnisetteServerOption(name: "SideStore Public Server (nythepegasus)", url: "https://anisette.nythepegasus.com"),
-        AnisetteServerOption(name: "SideStore Community v3", url: "https://ani.LV8.org")
-    ]
-    
-    init() {
-        reloadLocalList()
-    }
-    
-    func reloadLocalList() {
-        var result: [AnisetteServerOption] = Self.fallbackServers
-        let current = AnisetteDefaultsHelper.currentServerURL.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        if !current.isEmpty && !result.contains(where: { $0.url.caseInsensitiveCompare(current) == .orderedSame }) {
-            let host = URL(string: current)?.host ?? current
-            result.insert(AnisetteServerOption(name: "Máy chủ tùy chỉnh (\(host))", url: current), at: 0)
-        }
-        self.servers = result
-    }
-    
-    func fetchPublicServers() async {
+    func refreshFromRemote() async {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
         
-        guard let listURL = URL(string: "https://raw.githubusercontent.com/SideStore/anisette-servers/main/servers.json") else {
-            reloadLocalList()
-            return
+        if let synced = try? await AnisetteServersManager.shared.syncWithRemote() {
+            let visible = synced.filter { !$0.isHidden }
+            self.servers = mergeWithCurrent(visible)
+        } else {
+            let local = await AnisetteServersManager.shared.loadLocalServers().filter { !$0.isHidden }
+            self.servers = mergeWithCurrent(local)
         }
-        
-        do {
-            let (data, _) = try await URLSession.shared.data(from: listURL)
-            let decoded = try JSONDecoder().decode(RemoteServerListResponse.self, from: data)
-            var merged: [AnisetteServerOption] = decoded.servers.map {
-                AnisetteServerOption(name: $0.name, url: $0.address)
-            }
-            for fallback in Self.fallbackServers where !merged.contains(where: { $0.url.caseInsensitiveCompare(fallback.url) == .orderedSame }) {
-                merged.append(fallback)
-            }
-            let current = AnisetteDefaultsHelper.currentServerURL.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            if !current.isEmpty && !merged.contains(where: { $0.url.caseInsensitiveCompare(current) == .orderedSame }) {
-                let host = URL(string: current)?.host ?? current
-                merged.insert(AnisetteServerOption(name: "Máy chủ tùy chỉnh (\(host))", url: current), at: 0)
-            }
-            self.servers = merged
-        } catch {
-            reloadLocalList()
+    }
+    
+    func reloadCurrentSelection() async {
+        let local = await AnisetteServersManager.shared.loadLocalServers().filter { !$0.isHidden }
+        self.servers = mergeWithCurrent(local)
+    }
+    
+    private func mergeWithCurrent(_ items: [AnisetteServerItem]) -> [AnisetteServerItem] {
+        var result = items
+        if result.isEmpty {
+            result = [
+                AnisetteServerItem(
+                    name: "SideStore Official",
+                    address: AppConstants.Anisette.Servers.defaultServerURL,
+                    isHidden: false
+                )
+            ]
         }
+        let current = AnisetteDefaultsHelper.currentServerURL.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        if !current.isEmpty,
+           !result.contains(where: { $0.address.caseInsensitiveCompare(current) == .orderedSame }) {
+            let host = URL(string: current)?.host ?? current
+            result.insert(AnisetteServerItem(name: "Máy chủ tùy chỉnh (\(host))", address: current, isHidden: false), at: 0)
+        }
+        return result
     }
 }
 
@@ -1383,7 +1374,7 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                                 ProgressView()
                             } else {
                                 SwiftUI.Button {
-                                    Task { await listVM.fetchPublicServers() }
+                                    Task { await listVM.refreshFromRemote() }
                                 } label: {
                                     SwiftUI.Label("Làm mới", systemImage: "arrow.clockwise")
                                         .font(.caption.bold())
@@ -1391,16 +1382,16 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                             }
                         }
                         
-                        SwiftUI.Text("Chạm vào một máy chủ bên dưới để chọn làm Máy chủ Anisette đang hoạt động:")
+                        SwiftUI.Text("Chạm vào một máy chủ bên dưới để chọn làm Máy chủ Anisette đang hoạt động (đồng bộ trực tiếp với Settings):")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         
                         VStack(spacing: 8) {
                             ForEach(listVM.servers) { server in
-                                let isSelected = (vm.selectedAnisetteServerURL.caseInsensitiveCompare(server.url) == .orderedSame)
+                                let isSelected = (vm.selectedAnisetteServerURL.caseInsensitiveCompare(server.address) == .orderedSame)
                                 SwiftUI.Button {
-                                    vm.selectAnisetteServerURL(server.url)
-                                    listVM.reloadLocalList()
+                                    vm.selectAnisetteServerURL(server.address, isCustom: false)
+                                    Task { await listVM.reloadCurrentSelection() }
                                 } label: {
                                     HStack(spacing: 12) {
                                         SwiftUI.Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
@@ -1411,7 +1402,7 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                                             SwiftUI.Text(server.name)
                                                 .font(.subheadline.bold())
                                                 .foregroundColor(.primary)
-                                            SwiftUI.Text(server.url)
+                                            SwiftUI.Text(server.address)
                                                 .font(.caption2)
                                                 .foregroundColor(.secondary)
                                                 .lineLimit(1)
@@ -1443,7 +1434,7 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                                 .foregroundColor(.secondary)
                             
                             HStack(spacing: 8) {
-                                TextField("https://ani.sidestore.io", text: $customServerInput)
+                                TextField(AppConstants.Anisette.Servers.defaultServerURL, text: $customServerInput)
                                     .keyboardType(.URL)
                                     .autocapitalization(.none)
                                     .disableAutocorrection(true)
@@ -1454,8 +1445,8 @@ struct AnisetteDetailSheetView: SwiftUI.View {
                                 SwiftUI.Button {
                                     let trimmed = customServerInput.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                                     guard !trimmed.isEmpty else { return }
-                                    vm.selectAnisetteServerURL(trimmed)
-                                    listVM.reloadLocalList()
+                                    vm.selectAnisetteServerURL(trimmed, isCustom: true)
+                                    Task { await listVM.reloadCurrentSelection() }
                                     customServerInput = ""
                                 } label: {
                                     SwiftUI.Text("Lưu")
@@ -1497,7 +1488,7 @@ struct AnisetteDetailSheetView: SwiftUI.View {
             .navigationBarItems(trailing: SwiftUI.Button("Xong") { dismiss() })
             .task {
                 vm.updateInstantStatus()
-                await listVM.fetchPublicServers()
+                await listVM.loadCachedAndSync()
             }
         }
     }
